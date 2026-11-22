@@ -1,0 +1,316 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile and personal baseline favorite foods.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "favoriteFoods": {
+          "type": "array",
+          "description": "Personal everyday favorite foods (max 30 items, each 1-40 chars)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "email", "photoURL", "favoriteFoods", "createdAt", "updatedAt"]
+    },
+    "Board": {
+      "title": "Board",
+      "description": "A shared group dining room.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "ownerId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "inviteCode": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{6,12}$",
+          "maxLength": 12
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "description", "ownerId", "inviteCode", "createdAt", "updatedAt"]
+    },
+    "Invite": {
+      "title": "Invite",
+      "description": "Room code lookup record pointing to a dining room.",
+      "type": "object",
+      "properties": {
+        "inviteCode": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{6,12}$",
+          "maxLength": 12
+        },
+        "boardId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "boardName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "ownerId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["inviteCode", "boardId", "boardName", "ownerId", "createdAt"]
+    },
+    "BoardMember": {
+      "title": "BoardMember",
+      "description": "A collaborator participating in a dining room with today's selections and mood filters.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "boardId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "boardName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "role": {
+          "type": "string",
+          "enum": ["owner", "editor"]
+        },
+        "favoriteFoods": {
+          "type": "array",
+          "description": "Member's baseline favorite foods (max 30 items)."
+        },
+        "todayFoods": {
+          "type": "array",
+          "description": "Member's food picks for today's meal (max 30 items)."
+        },
+        "moodFilters": {
+          "type": "array",
+          "description": "Selected dietary/mood filter IDs (max 10 items)."
+        },
+        "budgetMax": {
+          "type": "string",
+          "enum": ["$", "$$", "$$$", "$$$$"]
+        },
+        "maxWalkKm": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["picking", "ready"]
+        },
+        "inviteCode": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{6,12}$",
+          "maxLength": 12
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "boardId",
+        "boardName",
+        "displayName",
+        "photoURL",
+        "role",
+        "favoriteFoods",
+        "todayFoods",
+        "moodFilters",
+        "budgetMax",
+        "maxWalkKm",
+        "status",
+        "inviteCode",
+        "joinedAt",
+        "updatedAt"
+      ]
+    },
+    "RoomSession": {
+      "title": "RoomSession",
+      "description": "Shared real-time roulette and AI decision state for a dining room.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "boardId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "spinCount": {
+          "type": "number"
+        },
+        "lastWinner": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "rejectedFoods": {
+          "type": "array",
+          "description": "Foods vetoed after wheel spins (max 30 items)."
+        },
+        "weightMode": {
+          "type": "string",
+          "enum": ["weighted", "equal"]
+        },
+        "finalSearchKeyword": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "aiFinalPick": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "aiSummaryTone": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "aiMemberBreakdown": {
+          "type": "array",
+          "description": "Per-member reasoning bullets (max 20 items)."
+        },
+        "aiBackupName": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "aiBackupKeyword": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "aiBackupReason": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "updatedBy": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "boardId",
+        "spinCount",
+        "lastWinner",
+        "rejectedFoods",
+        "weightMode",
+        "finalSearchKeyword",
+        "aiFinalPick",
+        "aiSummaryTone",
+        "aiMemberBreakdown",
+        "aiBackupName",
+        "aiBackupKeyword",
+        "aiBackupReason",
+        "updatedBy",
+        "updatedByName",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile and personal baseline favorite foods."
+    },
+    "/boards/{boardId}": {
+      "schema": { "$ref": "#/entities/Board" },
+      "description": "Shared group dining rooms."
+    },
+    "/invites/{inviteCode}": {
+      "schema": { "$ref": "#/entities/Invite" },
+      "description": "6-digit room code directory mapping code to boardId."
+    },
+    "/boards/{boardId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/BoardMember" },
+      "description": "Members authorized in a dining room with their food choices and mood filters."
+    },
+    "/boards/{boardId}/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/RoomSession" },
+      "description": "Synchronized roulette state and AI rescue result for a dining room."
+    }
+  }
+}
