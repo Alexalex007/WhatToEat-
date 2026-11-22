@@ -30,12 +30,22 @@ export function AuthLanding({ onEnterDemoMode, hasPendingJoinCode }: AuthLanding
       await signInWithPopup(auth, googleProvider);
     } catch (error: unknown) {
       const code = (error as { code?: string })?.code || '';
+      const rawMsg = (error as { message?: string })?.message || '';
+      const host = typeof window !== 'undefined' ? window.location.hostname : '';
       if (code === 'auth/popup-closed-by-user') {
         setErrorMsg('你已取消 Google 登入視窗。');
       } else if (code === 'auth/popup-blocked') {
-        setErrorMsg('瀏覽器封鎖咗彈出視窗，請允許彈出視窗或改用電郵登入。');
+        setErrorMsg('瀏覽器封鎖咗彈出視窗，請允許本網站彈出視窗後再按一次「Google 帳號一鍵登入」。');
+      } else if (code === 'auth/unauthorized-domain') {
+        setErrorMsg(
+          `目前網域（${host}）尚未加入 Firebase Authentication 的「已授權網域」，請到 Firebase Console → Authentication → Settings → 已授權網域 新增此網域。`
+        );
+      } else if (code === 'auth/operation-not-allowed') {
+        setErrorMsg('此 Firebase 專案尚未啟用 Google 登入，請到 Firebase Console → Authentication → 登入方式 啟用 Google。');
       } else {
-        setErrorMsg('Google 登入暫時未能完成，請稍後再試或先試用 Demo 測試模式。');
+        setErrorMsg(
+          `Google 登入失敗（${code || 'unknown'}）：${rawMsg || '請確認瀏覽器允許第三方 Cookie 及彈出視窗。'}`
+        );
       }
     } finally {
       setIsLoading(false);
@@ -74,6 +84,7 @@ export function AuthLanding({ onEnterDemoMode, hasPendingJoinCode }: AuthLanding
       }
     } catch (error: unknown) {
       const code = (error as { code?: string })?.code || '';
+      const host = typeof window !== 'undefined' ? window.location.hostname : '';
       if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
         setErrorMsg('電郵或密碼唔正確，請檢查後再試。');
       } else if (code === 'auth/email-already-in-use') {
@@ -81,9 +92,15 @@ export function AuthLanding({ onEnterDemoMode, hasPendingJoinCode }: AuthLanding
       } else if (code === 'auth/invalid-email') {
         setErrorMsg('電郵格式唔正確。');
       } else if (code === 'auth/operation-not-allowed') {
-        setErrorMsg('目前專案未啟用電郵密碼登入，請使用 Google 一鍵登入或 Demo 測試模式。');
+        setErrorMsg(
+          '目前專案未喺 Firebase Console 啟用「電子郵件/密碼」登入（系統預設只啟用 Google 登入）。請改按上方「使用 Google 帳號一鍵登入」，或到 Firebase Console → Authentication → 登入方式 啟用「電子郵件/密碼」。'
+        );
+      } else if (code === 'auth/unauthorized-domain') {
+        setErrorMsg(
+          `目前網域（${host}）尚未加入 Firebase Authentication 的「已授權網域」，請先新增後再登入。`
+        );
       } else {
-        setErrorMsg('登入失敗，請稍後再試。');
+        setErrorMsg(`登入失敗（${code || 'unknown'}），請稍後再試。`);
       }
     } finally {
       setIsLoading(false);

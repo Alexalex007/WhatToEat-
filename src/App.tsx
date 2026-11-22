@@ -484,9 +484,10 @@ function MainApp() {
         userName={currentUserName}
         userPhoto={currentUserPhoto}
         demoMode={effectiveDemoMode}
+        isGuestDemo={guestDemoActive && !user}
         onToggleDemoMode={() => {
           if (guestDemoActive && !user) {
-            showToast('試玩模式必須保持開啟 4 位測試朋友；想自建真實飯局可以登出後用 Google 登入！');
+            showToast('目前為免登入試玩模式；如需建立或加入真實房間，請先返回登入帳號。');
             return;
           }
           setDemoMode((prev) => !prev);
@@ -494,6 +495,21 @@ function MainApp() {
         onLogout={handleLogout}
         hasMapTarget={Boolean(activeSearchKeyword)}
       />
+
+      {guestDemoActive && !user && (
+        <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-4">
+          <div className="px-4 py-3 rounded-2xl bg-[#FEF3C7] border border-[#F59E0B]/40 text-[#92400E] text-xs sm:text-sm font-medium flex flex-wrap items-center justify-between gap-2">
+            <span>目前為「免登入 Demo 試玩模式」，建立／加入真實朋友飯局需先登入帳號。</span>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="px-3 py-1.5 rounded-xl bg-[#1C1917] text-white text-xs font-bold hover:bg-[#292524] transition-colors cursor-pointer"
+            >
+              立即去登入真實帳號
+            </button>
+          </div>
+        </div>
+      )}
 
       {toastMsg && (
         <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-4">

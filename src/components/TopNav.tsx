@@ -20,6 +20,7 @@ interface TopNavProps {
   userName: string;
   userPhoto: string;
   demoMode: boolean;
+  isGuestDemo?: boolean;
   onToggleDemoMode: () => void;
   onLogout: () => void;
   hasMapTarget: boolean;
@@ -41,6 +42,7 @@ export function TopNav({
   userName,
   userPhoto,
   demoMode,
+  isGuestDemo = false,
   onToggleDemoMode,
   onLogout,
   hasMapTarget,
@@ -139,7 +141,7 @@ export function TopNav({
               className="min-h-[38px] px-2.5 sm:px-3 py-1.5 rounded-xl border border-[#E7E2DA] bg-white hover:bg-[#FAF8F5] text-xs font-semibold text-[#6B6560] hover:text-[#1C1917] flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">登出</span>
+              <span className="hidden sm:inline">{isGuestDemo ? '返回登入' : '登出'}</span>
             </button>
           </div>
         </div>
