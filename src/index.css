@@ -2,24 +2,48 @@
 
 @layer base {
   :root {
-    --font-display: 'Fraunces', 'Noto Serif TC', Georgia, serif;
-    --font-sans: 'Plus Jakarta Sans', 'Noto Sans TC', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Plus Jakarta Sans", "Noto Sans TC", system-ui, sans-serif;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Plus Jakarta Sans", "Noto Sans TC", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   }
 
   html {
     font-family: var(--font-sans);
     scroll-behavior: smooth;
+    background-color: #F5F5F7;
+    color: #1D1D1F;
   }
 
-  h1, h2, .font-display {
+  h1, h2, h3, .font-display {
     font-family: var(--font-display);
+    letter-spacing: -0.02em;
   }
 
   .font-mono-tabular {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+}
+
+/* Smooth Apple-like tactile button & contained focus/highlight */
+.apple-btn {
+  position: relative;
+  overflow: hidden;
+  transition:
+    background-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.apple-btn:active:not(:disabled) {
+  transform: scale(0.975);
+}
+
+.apple-btn:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px #0071E3;
 }
 
 @media (prefers-reduced-motion: reduce) {

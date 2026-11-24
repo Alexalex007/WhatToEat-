@@ -2,6 +2,7 @@ import { User } from 'firebase/auth';
 import {
   collection,
   collectionGroup,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -10,10 +11,12 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
+import { getDefaultMealPeriod } from '../data/hkFoods';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   BLUEPRINT_LIMITS,
@@ -22,16 +25,20 @@ import {
   clampString,
   generateSafeId,
   generateSixDigitRoomCode,
+  MealHistoryEntry,
+  MealPeriod,
   PriceTier,
   RoomSession,
+  sanitizeCuisineArray,
   sanitizeFoodArray,
+  sanitizeFormatArray,
   sanitizeMoodArray,
   UserProfile,
 } from '../types';
 
-function safeDisplayName(user: User): string {
-  const raw = user.displayName || user.email?.split('@')[0] || '為食友';
-  return clampString(raw, BLUEPRINT_LIMITS.MAX_DISPLAY_NAME) || '為食友';
+function safeDisplayName(user: User, fallbackOverride?: string): string {
+  const raw = fallbackOverride || user.displayName || user.email?.split('@')[0] || '食飯友';
+  return clampString(raw, BLUEPRINT_LIMITS.MAX_DISPLAY_NAME) || '食飯友';
 }
 
 function safePhotoURL(user: User): string {
@@ -42,7 +49,11 @@ function safeEmail(user: User): string {
   return (user.email || '').slice(0, BLUEPRINT_LIMITS.MAX_EMAIL);
 }
 
-export async function ensureUserAndDefaultRoom(user: User): Promise<UserProfile> {
+export async function ensureUserAndDefaultRoom(
+  user: User,
+  nicknameOverride?: string,
+  skipDefaultRoomCreation = false
+): Promise<UserProfile> {
   const userPath = `users/${user.uid}`;
   const userRef = doc(db, 'users', user.uid);
 
@@ -57,7 +68,7 @@ export async function ensureUserAndDefaultRoom(user: User): Promise<UserProfile>
   if (!profileSnap.exists()) {
     const newProfilePayload = {
       uid: user.uid,
-      displayName: safeDisplayName(user),
+      displayName: safeDisplayName(user, nicknameOverride),
       email: safeEmail(user),
       photoURL: safePhotoURL(user),
       favoriteFoods: [] as string[],
@@ -75,23 +86,25 @@ export async function ensureUserAndDefaultRoom(user: User): Promise<UserProfile>
     profile = profileSnap.data() as UserProfile;
   }
 
-  // Ensure user belongs to at least one dining room
-  try {
-    const membershipsQuery = query(
-      collectionGroup(db, 'members'),
-      where('uid', '==', user.uid)
-    );
-    const membershipsSnap = await getDocs(membershipsQuery);
-    if (membershipsSnap.empty) {
-      await createDiningRoom(
-        user,
-        '今日飯局',
-        '同朋友即時入房揀食咩，一齊轉輪盤或者交俾 AI 拍板！',
-        profile.favoriteFoods || []
+  if (!skipDefaultRoomCreation) {
+    try {
+      const membershipsQuery = query(
+        collectionGroup(db, 'members'),
+        where('uid', '==', user.uid)
       );
+      const membershipsSnap = await getDocs(membershipsQuery);
+      if (membershipsSnap.empty) {
+        await createDiningRoom(
+          user,
+          '今日飯局',
+          '',
+          profile.favoriteFoods || [],
+          nicknameOverride
+        );
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, 'members');
     }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'members');
   }
 
   return profile;
@@ -101,7 +114,8 @@ export async function createDiningRoom(
   user: User,
   rawName: string,
   rawDesc: string,
-  favoriteFoods: string[]
+  favoriteFoods: string[],
+  nicknameOverride?: string
 ): Promise<string> {
   const name = clampString(rawName, BLUEPRINT_LIMITS.MAX_BOARD_NAME);
   if (!name) throw new Error('請輸入飯局名稱');
@@ -127,6 +141,7 @@ export async function createDiningRoom(
     description,
     ownerId: user.uid,
     inviteCode,
+    qrAutoRotate: false,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -143,9 +158,12 @@ export async function createDiningRoom(
     uid: user.uid,
     boardId,
     boardName: name,
-    displayName: safeDisplayName(user),
+    displayName: safeDisplayName(user, nicknameOverride),
     photoURL: safePhotoURL(user),
     role: 'owner',
+    mealPeriod: getDefaultMealPeriod(),
+    selectedCuisines: [],
+    selectedFormats: [],
     favoriteFoods: cleanFavs,
     todayFoods: cleanFavs,
     moodFilters: [],
@@ -169,11 +187,12 @@ export async function createDiningRoom(
 export async function joinRoomByCode(
   user: User,
   rawCode: string,
-  favoriteFoods: string[]
+  favoriteFoods: string[],
+  nicknameOverride?: string
 ): Promise<{ boardId: string; boardName: string; alreadyMember: boolean }> {
   const code = rawCode.trim().toUpperCase();
   if (!BLUEPRINT_LIMITS.INVITE_CODE_PATTERN.test(code)) {
-    throw new Error('房間號碼格式唔正確，請輸入 6 位數字或英數代碼。');
+    throw new Error('房間號碼格式唔正確，請輸入 6 位房間碼。');
   }
 
   const inviteRef = doc(db, 'invites', code);
@@ -185,7 +204,7 @@ export async function joinRoomByCode(
   }
 
   if (!inviteSnap.exists()) {
-    throw new Error('搵唔到呢個房間號碼，請同朋友確認再試一次。');
+    throw new Error('房間號碼或 QR Code 已失效或搵唔到，請向房主索取最新 QR Code。');
   }
 
   const inviteData = inviteSnap.data() as { boardId: string; boardName: string; inviteCode: string };
@@ -208,9 +227,12 @@ export async function joinRoomByCode(
       uid: user.uid,
       boardId: inviteData.boardId,
       boardName: clampString(inviteData.boardName, BLUEPRINT_LIMITS.MAX_BOARD_NAME) || '朋友飯局',
-      displayName: safeDisplayName(user),
+      displayName: safeDisplayName(user, nicknameOverride),
       photoURL: safePhotoURL(user),
       role: 'editor',
+      mealPeriod: getDefaultMealPeriod(),
+      selectedCuisines: [],
+      selectedFormats: [],
       favoriteFoods: cleanFavs,
       todayFoods: cleanFavs,
       moodFilters: [],
@@ -226,6 +248,52 @@ export async function joinRoomByCode(
   }
 
   return { boardId: inviteData.boardId, boardName: inviteData.boardName, alreadyMember: false };
+}
+
+export async function rotateRoomInviteCode(board: Board): Promise<string> {
+  const oldCode = board.inviteCode;
+  let newCode = generateSixDigitRoomCode();
+  if (newCode === oldCode) {
+    newCode = generateSixDigitRoomCode();
+  }
+
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'invites', newCode), {
+    inviteCode: newCode,
+    boardId: board.id,
+    boardName: board.name,
+    ownerId: board.ownerId,
+    createdAt: serverTimestamp(),
+  });
+
+  batch.update(doc(db, 'boards', board.id), {
+    inviteCode: newCode,
+    qrAutoRotate: Boolean(board.qrAutoRotate),
+    updatedAt: serverTimestamp(),
+  });
+
+  if (oldCode && oldCode !== newCode) {
+    batch.delete(doc(db, 'invites', oldCode));
+  }
+
+  try {
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `boards/${board.id}`);
+  }
+
+  return newCode;
+}
+
+export async function setRoomQrAutoRotate(boardId: string, qrAutoRotate: boolean): Promise<void> {
+  try {
+    await updateDoc(doc(db, 'boards', boardId), {
+      qrAutoRotate,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `boards/${boardId}`);
+  }
 }
 
 export async function saveBaselineFavorites(
@@ -267,6 +335,9 @@ export async function updateMyRoomPreferences(
   user: User,
   memberBoardIds: string[],
   input: {
+    mealPeriod: MealPeriod;
+    selectedCuisines: string[];
+    selectedFormats: string[];
     favoriteFoods?: string[];
     todayFoods: string[];
     moodFilters: string[];
@@ -275,6 +346,8 @@ export async function updateMyRoomPreferences(
     status: 'picking' | 'ready';
   }
 ): Promise<void> {
+  const cleanCuisines = sanitizeCuisineArray(input.selectedCuisines);
+  const cleanFormats = sanitizeFormatArray(input.selectedFormats);
   const cleanToday = sanitizeFoodArray(input.todayFoods);
   const cleanMoods = sanitizeMoodArray(input.moodFilters);
   const clampedKm = Math.max(1, Math.min(3, Number(input.maxWalkKm) || 2));
@@ -296,6 +369,9 @@ export async function updateMyRoomPreferences(
       }
     }
     batch.update(doc(db, 'boards', boardId, 'members', user.uid), {
+      mealPeriod: input.mealPeriod,
+      selectedCuisines: cleanCuisines,
+      selectedFormats: cleanFormats,
       favoriteFoods: cleanFavs,
       todayFoods: cleanToday,
       moodFilters: cleanMoods,
@@ -306,6 +382,9 @@ export async function updateMyRoomPreferences(
     });
   } else {
     batch.update(doc(db, 'boards', boardId, 'members', user.uid), {
+      mealPeriod: input.mealPeriod,
+      selectedCuisines: cleanCuisines,
+      selectedFormats: cleanFormats,
       todayFoods: cleanToday,
       moodFilters: cleanMoods,
       budgetMax: input.budgetMax,
@@ -329,6 +408,7 @@ export async function syncRoomSession(
   patch: Partial<{
     spinCount: number;
     lastWinner: string;
+    isSpinResult: boolean;
     rejectedFoods: string[];
     weightMode: 'weighted' | 'equal';
     finalSearchKeyword: string;
@@ -341,11 +421,17 @@ export async function syncRoomSession(
   }>
 ): Promise<void> {
   const sessionRef = doc(db, 'boards', boardId, 'sessions', 'current');
-  const nextPayload = {
+  const actorName = safeDisplayName(user);
+  const nextSpinByName = patch.isSpinResult
+    ? actorName
+    : clampString(currentSession?.lastSpunByName ?? '', 60);
+
+  const basePayload: Record<string, unknown> = {
     id: 'current',
     boardId,
     spinCount: Math.min(1000, Math.max(0, patch.spinCount ?? currentSession?.spinCount ?? 0)),
     lastWinner: clampString(patch.lastWinner ?? currentSession?.lastWinner ?? '', 60),
+    lastSpunByName: nextSpinByName,
     rejectedFoods: sanitizeFoodArray(patch.rejectedFoods ?? currentSession?.rejectedFoods ?? []),
     weightMode: patch.weightMode ?? currentSession?.weightMode ?? 'weighted',
     finalSearchKeyword: clampString(
@@ -362,33 +448,59 @@ export async function syncRoomSession(
     aiBackupKeyword: clampString(patch.aiBackupKeyword ?? currentSession?.aiBackupKeyword ?? '', 80),
     aiBackupReason: clampString(patch.aiBackupReason ?? currentSession?.aiBackupReason ?? '', 300),
     updatedBy: user.uid,
-    updatedByName: safeDisplayName(user),
+    updatedByName: actorName,
     updatedAt: serverTimestamp(),
   };
 
+  if (patch.isSpinResult) {
+    basePayload.lastSpunAt = serverTimestamp();
+  } else if (currentSession?.lastSpunAt) {
+    basePayload.lastSpunAt = currentSession.lastSpunAt;
+  }
+
   try {
     if (!currentSession) {
-      await setDoc(sessionRef, nextPayload);
+      await setDoc(sessionRef, basePayload);
     } else {
-      await updateDoc(sessionRef, {
-        spinCount: nextPayload.spinCount,
-        lastWinner: nextPayload.lastWinner,
-        rejectedFoods: nextPayload.rejectedFoods,
-        weightMode: nextPayload.weightMode,
-        finalSearchKeyword: nextPayload.finalSearchKeyword,
-        aiFinalPick: nextPayload.aiFinalPick,
-        aiSummaryTone: nextPayload.aiSummaryTone,
-        aiMemberBreakdown: nextPayload.aiMemberBreakdown,
-        aiBackupName: nextPayload.aiBackupName,
-        aiBackupKeyword: nextPayload.aiBackupKeyword,
-        aiBackupReason: nextPayload.aiBackupReason,
-        updatedBy: nextPayload.updatedBy,
-        updatedByName: nextPayload.updatedByName,
-        updatedAt: serverTimestamp(),
-      });
+      const updatePayload = { ...basePayload };
+      delete updatePayload.id;
+      delete updatePayload.boardId;
+      await updateDoc(sessionRef, updatePayload);
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `boards/${boardId}/sessions/current`);
+  }
+}
+
+export async function recordRoomMealDecision(
+  boardId: string,
+  user: User,
+  rawFoodName: string
+): Promise<void> {
+  const foodName = clampString(rawFoodName, 60);
+  if (!foodName) return;
+
+  const historyId = generateSafeId('meal');
+  const path = `boards/${boardId}/mealHistory/${historyId}`;
+  try {
+    await setDoc(doc(db, 'boards', boardId, 'mealHistory', historyId), {
+      id: historyId,
+      boardId,
+      foodName,
+      decidedBy: user.uid,
+      decidedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function deleteMealHistoryEntry(boardId: string, historyId: string): Promise<void> {
+  const path = `boards/${boardId}/mealHistory/${historyId}`;
+  try {
+    await deleteDoc(doc(db, 'boards', boardId, 'mealHistory', historyId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, path);
   }
 }
 
@@ -475,6 +587,28 @@ export function subscribeRoomSession(
     },
     (error) => {
       handleFirestoreError(error, OperationType.GET, path);
+    }
+  );
+}
+
+export function subscribeRoomMealHistory7Days(
+  boardId: string,
+  onData: (entries: MealHistoryEntry[]) => void
+): () => void {
+  const path = `boards/${boardId}/mealHistory`;
+  const sevenDaysAgo = Timestamp.fromMillis(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const q = query(
+    collection(db, 'boards', boardId, 'mealHistory'),
+    where('decidedAt', '>=', sevenDaysAgo),
+    orderBy('decidedAt', 'desc')
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      onData(snap.docs.map((d) => d.data() as MealHistoryEntry));
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
     }
   );
 }

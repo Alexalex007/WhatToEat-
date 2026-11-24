@@ -3,6 +3,19 @@ import { Timestamp } from 'firebase/firestore';
 export const PRICE_TIERS = ['$', '$$', '$$$', '$$$$'] as const;
 export type PriceTier = (typeof PRICE_TIERS)[number];
 
+export const MEAL_PERIODS = ['breakfast', 'lunch', 'dinner'] as const;
+export type MealPeriod = (typeof MEAL_PERIODS)[number];
+
+export const DISH_FORMAT_IDS = [
+  'rice',
+  'noodles',
+  'soup_hotpot',
+  'grill_fry',
+  'bread_light',
+  'sharing',
+] as const;
+export type DishFormatId = (typeof DISH_FORMAT_IDS)[number];
+
 export const BLUEPRINT_LIMITS = {
   ID_PATTERN: /^[a-zA-Z0-9_\-]+$/,
   INVITE_CODE_PATTERN: /^[A-Z0-9]{6,12}$/,
@@ -11,6 +24,8 @@ export const BLUEPRINT_LIMITS = {
   MAX_PHOTO_URL: 500,
   MAX_BOARD_NAME: 60,
   MAX_BOARD_DESC: 160,
+  MAX_CUISINES_COUNT: 6,
+  MAX_FORMATS_COUNT: 6,
   MAX_FOODS_COUNT: 30,
   MAX_FOOD_LEN: 40,
   MAX_MOOD_COUNT: 10,
@@ -19,7 +34,6 @@ export const BLUEPRINT_LIMITS = {
 export interface MoodFilterDef {
   id: string;
   label: string;
-  hint: string;
 }
 
 export interface UserProfile {
@@ -38,6 +52,7 @@ export interface Board {
   description: string;
   ownerId: string;
   inviteCode: string;
+  qrAutoRotate?: boolean;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -49,6 +64,9 @@ export interface BoardMember {
   displayName: string;
   photoURL: string;
   role: 'owner' | 'editor';
+  mealPeriod?: MealPeriod;
+  selectedCuisines?: string[];
+  selectedFormats?: string[];
   favoriteFoods: string[];
   todayFoods: string[];
   moodFilters: string[];
@@ -60,16 +78,12 @@ export interface BoardMember {
   updatedAt: Timestamp;
 }
 
-export interface DemoFriendProfile {
-  uid: string;
-  displayName: string;
-  photoURL: string;
-  favoriteFoods: string[];
-  todayFoods: string[];
-  moodFilters: string[];
-  budgetMax: PriceTier;
-  maxWalkKm: number;
-  status: 'picking' | 'ready';
+export interface MealHistoryEntry {
+  id: string;
+  boardId: string;
+  foodName: string;
+  decidedBy: string;
+  decidedAt: Timestamp;
 }
 
 export interface RoomSession {
@@ -77,6 +91,8 @@ export interface RoomSession {
   boardId: string;
   spinCount: number;
   lastWinner: string;
+  lastSpunByName?: string;
+  lastSpunAt?: Timestamp;
   rejectedFoods: string[];
   weightMode: 'weighted' | 'equal';
   finalSearchKeyword: string;
@@ -115,6 +131,34 @@ export function sanitizeFoodArray(items: string[]): string[] {
       cleaned.push(trimmed);
     }
     if (cleaned.length >= BLUEPRINT_LIMITS.MAX_FOODS_COUNT) break;
+  }
+  return cleaned;
+}
+
+export function sanitizeCuisineArray(items: string[]): string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of items) {
+    const trimmed = raw.trim().slice(0, 30);
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      cleaned.push(trimmed);
+    }
+    if (cleaned.length >= BLUEPRINT_LIMITS.MAX_CUISINES_COUNT) break;
+  }
+  return cleaned;
+}
+
+export function sanitizeFormatArray(items: string[]): string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of items) {
+    const trimmed = raw.trim().slice(0, 30);
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      cleaned.push(trimmed);
+    }
+    if (cleaned.length >= BLUEPRINT_LIMITS.MAX_FORMATS_COUNT) break;
   }
   return cleaned;
 }

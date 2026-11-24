@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'motion/react';
+import { Timestamp } from 'firebase/firestore';
 import {
-  AlertTriangle,
   Bot,
+  CheckCircle2,
+  Clock,
   Compass,
   Filter,
   Loader2,
@@ -9,32 +12,58 @@ import {
   RefreshCw,
   RotateCcw,
   Sparkles,
+  Users,
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { computeFilteredWheelPool, HK_MOOD_FILTERS } from '../data/hkFoods';
-import { AiRescueResult, BoardMember, DemoFriendProfile, RoomSession } from '../types';
+import {
+  computeFilteredWheelPool,
+  DISH_FORMAT_CATEGORIES,
+  getMealPeriodLabel,
+  HK_MOOD_FILTERS,
+  SIX_CUISINE_CATEGORIES,
+} from '../data/hkFoods';
+import { AiRescueResult, BoardMember, RoomSession } from '../types';
 
 interface DecisionArenaProps {
   roomName: string;
-  members: (BoardMember | DemoFriendProfile)[];
+  members: BoardMember[];
   session: RoomSession | null;
-  onUpdateSession: (patch: Partial<RoomSession>) => Promise<void>;
-  onSearchRestaurants: (keyword: string) => void;
+  recentMeals7Days: string[];
+  onUpdateSession: (
+    patch: Partial<RoomSession> & { isSpinResult?: boolean }
+  ) => Promise<void>;
+  onRecordMealDecision: (foodName: string) => Promise<void>;
+  onConfirmMealAndSearch: (foodName: string, searchKeyword: string) => Promise<void>;
 }
 
 const SLICE_PALETTE = [
-  '#E85D3F',
-  '#F59E0B',
-  '#2F855A',
+  '#0071E3',
+  '#FF3B30',
+  '#34C759',
+  '#FF9500',
+  '#5856D6',
+  '#AF52DE',
+  '#00A3A3',
+  '#FF2D55',
   '#0284C7',
-  '#D97706',
-  '#7C3AED',
-  '#DB2777',
-  '#0D9488',
-  '#4F46E5',
-  '#EA580C',
+  '#3A3A3C',
 ];
+
+function formatSpinTimeHK(ts?: Timestamp): string {
+  if (!ts || typeof ts.toDate !== 'function') return '剛才';
+  try {
+    return ts.toDate().toLocaleString('zh-HK', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return '剛才';
+  }
+}
 
 function drawWheelCanvas(
   canvas: HTMLCanvasElement,
@@ -59,22 +88,21 @@ function drawWheelCanvas(
 
   ctx.clearRect(0, 0, displaySize, displaySize);
 
-  // Outer rim
   ctx.beginPath();
   ctx.arc(cx, cy, radius + 6, 0, Math.PI * 2);
-  ctx.fillStyle = '#1C1917';
+  ctx.fillStyle = '#1D1D1F';
   ctx.fill();
 
   if (items.length === 0) {
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.fillStyle = '#FAF8F5';
+    ctx.fillStyle = '#F5F5F7';
     ctx.fill();
-    ctx.fillStyle = '#6B6560';
+    ctx.fillStyle = '#6E6E73';
     ctx.font = '600 14px "Plus Jakarta Sans", "Noto Sans TC", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('暫無候選美食', cx, cy);
+    ctx.fillText('暫無候選項目', cx, cy);
     ctx.restore();
     return;
   }
@@ -97,7 +125,6 @@ function drawWheelCanvas(
     ctx.strokeStyle = '#FFFFFF';
     ctx.stroke();
 
-    // Draw label radially
     ctx.save();
     const midAngle = startAngle + sliceAngle / 2;
     ctx.translate(cx, cy);
@@ -114,18 +141,17 @@ function drawWheelCanvas(
     startAngle = endAngle;
   });
 
-  // Center hub
   ctx.beginPath();
   ctx.arc(cx, cy, 22, 0, Math.PI * 2);
   ctx.fillStyle = '#FFFFFF';
   ctx.fill();
   ctx.lineWidth = 4;
-  ctx.strokeStyle = '#1C1917';
+  ctx.strokeStyle = '#1D1D1F';
   ctx.stroke();
 
   ctx.beginPath();
   ctx.arc(cx, cy, 7, 0, Math.PI * 2);
-  ctx.fillStyle = '#E85D3F';
+  ctx.fillStyle = '#0071E3';
   ctx.fill();
 
   ctx.restore();
@@ -135,8 +161,10 @@ export function DecisionArena({
   roomName,
   members,
   session,
+  recentMeals7Days,
   onUpdateSession,
-  onSearchRestaurants,
+  onRecordMealDecision,
+  onConfirmMealAndSearch,
 }: DecisionArenaProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rotationRef = useRef<number>(0);
@@ -145,7 +173,9 @@ export function DecisionArena({
 
   const [isSpinning, setIsSpinning] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [allowRepeat7Days, setAllowRepeat7Days] = useState(false);
   const [localWinner, setLocalWinner] = useState<string>(session?.lastWinner || '');
+  const [recordedNotice, setRecordedNotice] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -155,14 +185,18 @@ export function DecisionArena({
   const weightMode = session?.weightMode || 'weighted';
 
   useEffect(() => {
-    if (session?.lastWinner) {
-      setLocalWinner(session.lastWinner);
-    }
+    setLocalWinner(session?.lastWinner || '');
   }, [session?.lastWinner]);
 
   const pool = useMemo(
-    () => computeFilteredWheelPool(members, rejectedFoods),
-    [members, rejectedFoods]
+    () =>
+      computeFilteredWheelPool(
+        members,
+        rejectedFoods,
+        recentMeals7Days,
+        allowRepeat7Days
+      ),
+    [members, rejectedFoods, recentMeals7Days, allowRepeat7Days]
   );
 
   const wheelSlices = useMemo(() => {
@@ -177,7 +211,9 @@ export function DecisionArena({
   const playTick = useCallback(() => {
     if (!soundEnabled) return;
     try {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AudioCtx) return;
       if (!audioCtxRef.current) {
         audioCtxRef.current = new AudioCtx();
@@ -219,9 +255,9 @@ export function DecisionArena({
     if (isSpinning || wheelSlices.length === 0) return;
 
     setSyncError(null);
+    setRecordedNotice(null);
     setIsSpinning(true);
 
-    // Pick weighted winner first, then animate accurately to that slice
     const totalWeight = wheelSlices.reduce((acc, s) => acc + s.weight, 0);
     let rand = Math.random() * totalWeight;
     let chosenIdx = 0;
@@ -233,7 +269,6 @@ export function DecisionArena({
       }
     }
 
-    // Compute angular range of chosenIdx relative to rotation = 0
     let accWeightBefore = 0;
     for (let i = 0; i < chosenIdx; i++) {
       accWeightBefore += wheelSlices[i].weight;
@@ -242,8 +277,6 @@ export function DecisionArena({
     const sliceSpan = (wheelSlices[chosenIdx].weight / totalWeight) * Math.PI * 2;
     const sliceTargetMid = sliceStart + sliceSpan * (0.25 + Math.random() * 0.5);
 
-    // Pointer is at top (-PI/2), where startAngle = rotation - PI/2
-    // So angle under pointer at rotation R has offset (2*PI - (R mod 2*PI)) mod 2*PI
     const desiredMod = (Math.PI * 2 - (sliceTargetMid % (Math.PI * 2))) % (Math.PI * 2);
     const currentMod = ((rotationRef.current % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
     let delta = desiredMod - currentMod;
@@ -260,7 +293,6 @@ export function DecisionArena({
     const step = (now: number) => {
       const elapsed = now - startTime;
       const t = Math.min(1, elapsed / durationMs);
-      // Cubic ease-out for natural physical friction
       const eased = 1 - Math.pow(1 - t, 3);
       const currentRot = startRotation + (targetRotation - startRotation) * eased;
       rotationRef.current = currentRot;
@@ -285,6 +317,7 @@ export function DecisionArena({
           spinCount: spinCount + 1,
           lastWinner: winnerName,
           finalSearchKeyword: winnerName,
+          isSpinResult: true,
         }).catch((err) => {
           setSyncError(err instanceof Error ? err.message : '同步輪盤結果失敗');
         });
@@ -328,15 +361,36 @@ export function DecisionArena({
     try {
       await onUpdateSession({ weightMode: mode });
     } catch (err) {
-      setSyncError(err instanceof Error ? err.message : '切換機率模式失敗');
+      setSyncError(err instanceof Error ? err.message : '切換模式失敗');
+    }
+  };
+
+  const handleConfirmOnly = async (foodName: string) => {
+    setSyncError(null);
+    try {
+      await onRecordMealDecision(foodName);
+      setRecordedNotice(`已記錄「${foodName}」，7 日內呢間房唔會再重複揀。`);
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : '記錄失敗');
     }
   };
 
   const handleAiRescue = async () => {
     setAiError(null);
+    setRecordedNotice(null);
     setAiLoading(true);
 
     const moodLabelMap = HK_MOOD_FILTERS.reduce<Record<string, string>>((acc, item) => {
+      acc[item.id] = item.label;
+      return acc;
+    }, {});
+
+    const cuisineLabelMap = SIX_CUISINE_CATEGORIES.reduce<Record<string, string>>((acc, item) => {
+      acc[item.id] = item.label;
+      return acc;
+    }, {});
+
+    const formatLabelMap = DISH_FORMAT_CATEGORIES.reduce<Record<string, string>>((acc, item) => {
       acc[item.id] = item.label;
       return acc;
     }, {});
@@ -349,6 +403,9 @@ export function DecisionArena({
           roomName,
           members: members.map((m) => ({
             displayName: m.displayName,
+            mealPeriod: getMealPeriodLabel(m.mealPeriod),
+            selectedCuisines: (m.selectedCuisines || []).map((id) => cuisineLabelMap[id] || id),
+            selectedFormats: (m.selectedFormats || []).map((id) => formatLabelMap[id] || id),
             favoriteFoods: m.favoriteFoods || [],
             todayFoods: m.todayFoods || [],
             moodFilters: (m.moodFilters || []).map((id) => moodLabelMap[id] || id),
@@ -356,16 +413,29 @@ export function DecisionArena({
             maxWalkKm: m.maxWalkKm || 2,
           })),
           rejectedFoods,
+          recentMealsWithin7Days: recentMeals7Days,
           availableCandidates: pool.candidates.map((c) => c.name),
         }),
       });
 
-      const data = await resp.json();
-      if (!resp.ok) {
-        throw new Error(data?.error || 'AI 分析請求失敗，請稍後再試。');
+      const rawText = await resp.text();
+      let data: Record<string, unknown> = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText) as Record<string, unknown>;
+        } catch {
+          throw new Error(`伺服器回傳非 JSON 回應（HTTP ${resp.status}）`);
+        }
       }
 
-      const result = data as AiRescueResult;
+      if (!resp.ok) {
+        throw new Error(
+          (typeof data?.error === 'string' && data.error) ||
+            `AI 分析失敗（HTTP ${resp.status}）`
+        );
+      }
+
+      const result = data as unknown as AiRescueResult;
       await onUpdateSession({
         aiFinalPick: result.finalPick,
         aiSummaryTone: result.summaryTone,
@@ -376,97 +446,154 @@ export function DecisionArena({
         finalSearchKeyword: result.searchKeyword || result.finalPick,
       });
     } catch (err) {
-      setAiError(err instanceof Error ? err.message : 'AI 終極救場發生錯誤');
+      setAiError(err instanceof Error ? err.message : 'AI 分析發生錯誤');
     } finally {
       setAiLoading(false);
     }
   };
 
-  const showAiNudge = spinCount >= 2 || pool.candidates.length === 0;
+  const spunAuthor = session?.lastSpunByName || session?.updatedByName || '';
+  const spunTimeFormatted = formatSpinTimeHK(session?.lastSpunAt || session?.updatedAt);
 
   return (
     <div className="space-y-6">
-      {/* Stage 1: Smart Filter + Lucky Wheel */}
-      <section className="bg-white border border-[#E7E2DA] rounded-3xl p-5 sm:p-7 shadow-xs">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 pb-5 border-b border-[#E7E2DA]">
-          <div>
-            <span className="text-xs font-bold text-[#E85D3F]">第一階段決策 · 智能過濾 × 幸運大輪盤</span>
-            <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#1C1917] mt-0.5">
-              今日仲未決定？轉一轉先！
+      {/* Shared Group Choices Overview */}
+      <section className="bg-white border border-black/[0.08] rounded-[22px] p-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)] space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-[#0071E3]" />
+            <h2 className="font-semibold text-sm sm:text-base text-[#1D1D1F]">
+              同房大家想食乜（即時同步至輪盤）
             </h2>
-            <p className="text-xs sm:text-sm text-[#6B6560] mt-1">
-              系統已綜合 {members.length} 位成員口味，並按大家勾選嘅禁忌過濾衝突食物。
-            </p>
           </div>
+          <span className="font-mono-tabular text-xs text-[#6E6E73]">{members.length} 人</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+          {members.map((m) => {
+            const foods = m.todayFoods?.length ? m.todayFoods : m.favoriteFoods || [];
+            return (
+              <div
+                key={m.uid}
+                className="p-3 rounded-2xl bg-[#F5F5F7] border border-black/[0.06] space-y-1"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[#1D1D1F] truncate">
+                    {m.displayName}
+                  </span>
+                  <span className="text-[11px] font-medium text-[#6E6E73] shrink-0">
+                    {getMealPeriodLabel(m.mealPeriod)}
+                  </span>
+                </div>
+                <p className="text-xs text-[#6E6E73] line-clamp-2">
+                  {foods.length > 0 ? foods.join('、') : '未揀菜式'}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Stage 1: Lucky Wheel */}
+      <section className="bg-white border border-black/[0.08] rounded-[22px] p-5 sm:p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 border-b border-black/[0.08]">
+          <h2 className="font-display text-2xl font-bold text-[#1D1D1F]">幸運大輪盤</h2>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex p-1 rounded-xl bg-[#FAF8F5] border border-[#E7E2DA]">
+            <div className="relative inline-flex p-1 rounded-xl bg-[#E8E8ED]/80 border border-black/[0.06] overflow-hidden">
               <button
                 type="button"
                 onClick={() => handleToggleWeightMode('weighted')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                  weightMode === 'weighted'
-                    ? 'bg-white text-[#1C1917] shadow-xs'
-                    : 'text-[#6B6560] hover:text-[#1C1917]'
+                className={`apple-btn relative px-3 py-1.5 rounded-[9px] text-xs font-semibold cursor-pointer z-10 ${
+                  weightMode === 'weighted' ? 'text-[#1D1D1F]' : 'text-[#6E6E73]'
                 }`}
               >
-                按人氣加權
+                {weightMode === 'weighted' && (
+                  <motion.span
+                    layoutId="wheel-weight-pill"
+                    transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                    className="absolute inset-0 bg-white rounded-[9px] shadow-[0_1px_2px_rgba(0,0,0,0.08)] -z-10"
+                  />
+                )}
+                <span>人氣加權</span>
               </button>
               <button
                 type="button"
                 onClick={() => handleToggleWeightMode('equal')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                  weightMode === 'equal'
-                    ? 'bg-white text-[#1C1917] shadow-xs'
-                    : 'text-[#6B6560] hover:text-[#1C1917]'
+                className={`apple-btn relative px-3 py-1.5 rounded-[9px] text-xs font-semibold cursor-pointer z-10 ${
+                  weightMode === 'equal' ? 'text-[#1D1D1F]' : 'text-[#6E6E73]'
                 }`}
               >
-                平均機率
+                {weightMode === 'equal' && (
+                  <motion.span
+                    layoutId="wheel-weight-pill"
+                    transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                    className="absolute inset-0 bg-white rounded-[9px] shadow-[0_1px_2px_rgba(0,0,0,0.08)] -z-10"
+                  />
+                )}
+                <span>平均機率</span>
               </button>
             </div>
 
             <button
               type="button"
               onClick={() => setSoundEnabled((prev) => !prev)}
-              aria-label={soundEnabled ? '關閉輪盤音效' : '開啟輪盤音效'}
-              className="min-h-[38px] px-3 py-1.5 rounded-xl border border-[#E7E2DA] bg-[#FAF8F5] text-xs font-semibold text-[#1C1917] inline-flex items-center gap-1.5 cursor-pointer"
+              aria-label={soundEnabled ? '關閉音效' : '開啟音效'}
+              className="apple-btn min-h-[38px] px-3 py-1.5 rounded-xl border border-black/[0.1] bg-[#F5F5F7] text-xs font-semibold text-[#1D1D1F] inline-flex items-center gap-1.5 cursor-pointer"
             >
-              {soundEnabled ? <Volume2 className="w-4 h-4 text-[#E85D3F]" /> : <VolumeX className="w-4 h-4 text-[#6B6560]" />}
+              {soundEnabled ? (
+                <Volume2 className="w-4 h-4 text-[#0071E3]" />
+              ) : (
+                <VolumeX className="w-4 h-4 text-[#6E6E73]" />
+              )}
               <span>{soundEnabled ? '音效開' : '靜音'}</span>
             </button>
           </div>
         </div>
 
-        {/* Conflict Filter Notice */}
-        {pool.filteredOut.length > 0 && (
-          <div className="mt-5 p-4 rounded-2xl bg-[#FFFBEB] border border-[#F59E0B]/35 space-y-2">
+        {/* Conflict & 7-Day Filter Notice */}
+        {(pool.filteredOut.length > 0 || recentMeals7Days.length > 0) && (
+          <div className="mt-4 p-3.5 rounded-2xl bg-[#FFFBEB] border border-[#F59E0B]/35 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs sm:text-sm font-bold text-[#92400E]">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-[#92400E]">
                 <Filter className="w-4 h-4 shrink-0" />
-                <span>已自動剔除 {pool.filteredOut.length} 個衝突或已否決選項：</span>
+                <span>已避開（{pool.filteredOut.length}）</span>
               </div>
-              {rejectedFoods.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleResetRejected}
-                  className="text-xs font-semibold text-[#E85D3F] hover:underline inline-flex items-center gap-1 cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>重設已否決選項</span>
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                {recentMeals7Days.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAllowRepeat7Days((prev) => !prev)}
+                    className="text-xs font-semibold text-[#1D1D1F] hover:underline cursor-pointer"
+                  >
+                    {allowRepeat7Days ? '恢復避開 7 日內重複' : '容許重複 7 日內食過嘅菜'}
+                  </button>
+                )}
+                {rejectedFoods.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleResetRejected}
+                    className="text-xs font-semibold text-[#0071E3] hover:underline inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>重設否決</span>
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {pool.filteredOut.map((item) => (
-                <span
-                  key={`${item.name}_${item.reason}`}
-                  className="px-2.5 py-1 rounded-lg bg-white border border-[#F59E0B]/30 text-xs text-[#78350F]"
-                >
-                  <strong className="line-through mr-1">{item.name}</strong>
-                  <span className="text-[#92400E]">（{item.reason}）</span>
-                </span>
-              ))}
-            </div>
+            {pool.filteredOut.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {pool.filteredOut.map((item) => (
+                  <span
+                    key={`${item.name}_${item.reason}`}
+                    className="px-2.5 py-1 rounded-lg bg-white border border-[#F59E0B]/30 text-xs text-[#78350F]"
+                  >
+                    <strong className="line-through mr-1">{item.name}</strong>
+                    <span className="text-[#92400E]">（{item.reason}）</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -476,18 +603,23 @@ export function DecisionArena({
           </div>
         )}
 
+        {recordedNotice && (
+          <div className="mt-4 p-3 rounded-xl bg-[#DCFCE7] border border-[#16A34A]/30 text-[#15803D] text-xs sm:text-sm flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{recordedNotice}</span>
+          </div>
+        )}
+
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-          {/* Wheel Canvas Column */}
           <div className="lg:col-span-6 flex flex-col items-center">
-            <div className="relative w-full max-w-[330px] aspect-square flex items-center justify-center">
-              {/* Top Pointer Triangle */}
+            <div className="relative w-full max-w-[320px] aspect-square flex items-center justify-center">
               <div
-                className="absolute -top-2 left-1/2 -translate-x-1/2 z-10 w-0 h-0 border-l-[14px] border-l-transparent border-r-[14px] border-r-transparent border-t-[24px] border-t-[#E85D3F] drop-shadow"
+                className="absolute -top-2 left-1/2 -translate-x-1/2 z-10 w-0 h-0 border-l-[14px] border-l-transparent border-r-[14px] border-r-transparent border-t-[24px] border-t-[#0071E3] drop-shadow"
                 aria-hidden="true"
               />
               <canvas
                 ref={canvasRef}
-                className="w-full h-full rounded-full shadow-lg"
+                className="w-full h-full rounded-full shadow-md"
                 aria-label="幸運大輪盤"
               />
             </div>
@@ -496,150 +628,132 @@ export function DecisionArena({
               type="button"
               onClick={handleSpin}
               disabled={isSpinning || wheelSlices.length === 0}
-              className="mt-6 w-full max-w-[280px] min-h-[52px] px-6 py-3.5 rounded-2xl bg-[#E85D3F] hover:bg-[#D44A2C] text-white text-base font-bold inline-flex items-center justify-center gap-2 shadow-md transition-all cursor-pointer disabled:opacity-50"
+              className="apple-btn mt-6 w-full max-w-[260px] min-h-[50px] px-6 py-3 rounded-2xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-base font-semibold inline-flex items-center justify-center gap-2 shadow-[0_2px_8px_rgba(0,113,227,0.3)] cursor-pointer disabled:opacity-50"
             >
               <Compass className={`w-5 h-5 ${isSpinning ? 'animate-spin' : ''}`} />
-              <span>{isSpinning ? '輪盤轉動中...' : '轉動輪盤'}</span>
+              <span>{isSpinning ? '轉動中...' : '轉動輪盤'}</span>
             </button>
           </div>
 
-          {/* Candidate Pool & Spin Winner Column */}
           <div className="lg:col-span-6 space-y-5">
             {localWinner ? (
-              <div className="p-5 sm:p-6 rounded-3xl bg-[#FFF5F2] border-2 border-[#E85D3F] space-y-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="px-2.5 py-1 rounded-lg bg-[#E85D3F] text-white text-xs font-bold">
+              <div className="p-5 rounded-[22px] bg-[#F5F5F7] border border-[#0071E3]/40 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="px-2.5 py-1 rounded-lg bg-[#0071E3] text-white text-xs font-semibold">
                     第 {Math.max(1, spinCount)} 轉結果
                   </span>
-                  {session?.updatedByName && (
-                    <span className="text-xs text-[#6B6560]">
-                      由 {session.updatedByName} 轉出 · 全房同步
+                  {spunAuthor && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[#6E6E73]">
+                      <Clock className="w-3.5 h-3.5 text-[#0071E3]" />
+                      <span>
+                        由 <strong className="text-[#1D1D1F]">{spunAuthor}</strong> 於{' '}
+                        <span className="font-mono-tabular">{spunTimeFormatted}</span> 轉出
+                      </span>
                     </span>
                   )}
                 </div>
 
-                <div>
-                  <div className="text-xs font-semibold text-[#6B6560]">輪盤揀中咗：</div>
-                  <div className="font-display text-3xl sm:text-4xl font-bold text-[#1C1917] mt-1">
-                    {localWinner}
-                  </div>
+                <div className="font-display text-3xl font-bold text-[#1D1D1F]">
+                  {localWinner}
                 </div>
 
-                <div className="flex flex-col sm:flex-row gap-2.5">
+                <div className="flex flex-col sm:flex-row gap-2">
                   <button
                     type="button"
-                    onClick={() => onSearchRestaurants(localWinner)}
-                    className="flex-1 min-h-[48px] px-4 py-3 rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-sm font-bold inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    onClick={() => void onConfirmMealAndSearch(localWinner, localWinner)}
+                    className="apple-btn flex-1 min-h-[46px] px-4 py-2.5 rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <MapPin className="w-4 h-4" />
-                    <span>就食呢樣！搜尋附近餐廳</span>
+                    <span>就食呢樣！搜尋餐廳</span>
                   </button>
                   <button
                     type="button"
                     onClick={handleRejectAndSpinAgain}
                     disabled={isSpinning}
-                    className="min-h-[48px] px-4 py-3 rounded-xl bg-white border border-[#E7E2DA] hover:bg-[#FAF8F5] text-sm font-semibold text-[#1C1917] inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    className="apple-btn min-h-[46px] px-4 py-2.5 rounded-xl bg-white border border-black/[0.1] hover:bg-[#EBEBF0] text-sm font-semibold text-[#1D1D1F] inline-flex items-center justify-center gap-1.5 cursor-pointer"
                   >
                     <RefreshCw className="w-4 h-4" />
-                    <span>唔滿意？再轉一次</span>
+                    <span>再轉一次</span>
                   </button>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleConfirmOnly(localWinner)}
+                  className="apple-btn w-full min-h-[40px] px-3 py-1.5 rounded-xl bg-white border border-black/[0.1] hover:border-[#16A34A] text-xs font-semibold text-[#1D1D1F] cursor-pointer"
+                >
+                  確定食呢樣（記錄 7 日內唔重複）
+                </button>
               </div>
             ) : (
-              <div className="p-5 rounded-2xl bg-[#FAF8F5] border border-[#E7E2DA]">
-                <div className="text-sm font-bold text-[#1C1917] mb-1">
-                  目前可上輪盤候選項目（{wheelSlices.length} 款）
-                </div>
-                <p className="text-xs text-[#6B6560]">
-                  {wheelSlices.length > 0
-                    ? '撳左邊「轉動輪盤」，全組即時一齊抽籤！'
-                    : '所有選項已被禁忌條件剔除或否決，建議直接撳下面「AI 終極分析救場」！'}
-                </p>
+              <div className="p-4 rounded-2xl bg-[#F5F5F7] border border-black/[0.06] text-sm font-semibold text-[#1D1D1F]">
+                輪盤候選項目：{wheelSlices.length} 款（所有成員嘅選擇都會即時匯入）
               </div>
             )}
 
-            {/* Candidate Chips List */}
             {wheelSlices.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-[#6B6560]">候選池同支持成員：</div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[260px] overflow-y-auto pr-1">
-                  {wheelSlices.map((slice, idx) => (
-                    <div
-                      key={slice.name}
-                      className="p-3 rounded-xl bg-[#FAF8F5] border border-[#E7E2DA] flex items-center justify-between gap-2"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className="w-3 h-3 rounded-full shrink-0"
-                          style={{ backgroundColor: SLICE_PALETTE[idx % SLICE_PALETTE.length] }}
-                        />
-                        <div className="min-w-0">
-                          <div className="text-sm font-bold text-[#1C1917] truncate">
-                            {slice.name}
-                          </div>
-                          <div className="text-[11px] text-[#6B6560] truncate">
-                            {slice.supporters.join('、')}
-                          </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[240px] overflow-y-auto pr-1">
+                {wheelSlices.map((slice, idx) => (
+                  <div
+                    key={slice.name}
+                    className="p-3 rounded-xl bg-[#F5F5F7] border border-black/[0.06] flex items-center justify-between gap-2"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-3 h-3 rounded-full shrink-0"
+                        style={{ backgroundColor: SLICE_PALETTE[idx % SLICE_PALETTE.length] }}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-[#1D1D1F] truncate">
+                          {slice.name}
+                        </div>
+                        <div className="text-[11px] text-[#6E6E73] truncate">
+                          {slice.supporters.join('、')}
                         </div>
                       </div>
-                      <span className="px-2 py-0.5 rounded bg-white border border-[#E7E2DA] font-mono-tabular text-xs font-semibold text-[#1C1917] shrink-0">
-                        {slice.votes} 票
-                      </span>
                     </div>
-                  ))}
-                </div>
+                    <span className="px-2 py-0.5 rounded bg-white border border-black/[0.08] font-mono-tabular text-xs font-semibold text-[#1D1D1F] shrink-0">
+                      {slice.votes} 票
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
           </div>
         </div>
       </section>
 
-      {/* Stage 2: AI Ultimate Rescue */}
-      <section className="rounded-3xl overflow-hidden border border-[#E7E2DA] bg-white shadow-sm">
-        <div className="p-5 sm:p-7 bg-gradient-to-r from-[#E85D3F] via-[#DB2777] to-[#7C3AED] text-white">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5">
-            <div className="space-y-2 max-w-2xl">
-              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/20 text-xs font-bold">
-                <Bot className="w-4 h-4" />
-                <span>第二階段決策 · Gemini AI 終極和事佬</span>
-              </div>
-              {showAiNudge && (
-                <div className="inline-flex items-center gap-1.5 ml-0 sm:ml-2 px-2.5 py-1 rounded-lg bg-[#FEF3C7] text-[#92400E] text-xs font-bold">
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>
-                    {pool.candidates.length === 0
-                      ? '大家口味衝突好大，輪盤無晒選項！'
-                      : `輪盤轉咗 ${spinCount} 次仲未決定？`}
-                  </span>
-                </div>
-              )}
-              <h2 className="font-display text-2xl sm:text-3xl font-bold leading-snug">
-                最後都係揀唔到？交俾 AI 終極分析救場！
-              </h2>
-              <p className="text-sm text-white/90">
-                AI 會深度閱讀晒每位成員平時最愛、今日特別要求、禁忌衝突同被輪盤否決過嘅嘢，一次過拍板搵出最平衡大家嘅終極提案。
+      {/* Stage 2: AI Analysis */}
+      <section className="rounded-[22px] overflow-hidden border border-black/[0.08] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+        <div className="p-5 sm:p-6 bg-[#1D1D1F] text-white flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-2.5">
+            <Bot className="w-6 h-6 text-[#0A84FF] shrink-0" />
+            <div>
+              <h2 className="font-display text-xl sm:text-2xl font-bold">AI 分析推薦</h2>
+              <p className="text-xs text-white/75">
+                綜合各人用餐時段、菜系、食物類型、禁忌同近 7 日記錄拍板決定
               </p>
             </div>
-
-            <button
-              type="button"
-              onClick={handleAiRescue}
-              disabled={aiLoading || members.length === 0}
-              className="min-h-[54px] px-6 py-3.5 rounded-2xl bg-white hover:bg-[#FAF8F5] text-[#1C1917] font-bold text-sm sm:text-base inline-flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-[0.99] cursor-pointer disabled:opacity-60 shrink-0"
-            >
-              {aiLoading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin text-[#E85D3F]" />
-                  <span>AI 拆解口味矛盾中...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-5 h-5 text-[#E85D3F]" />
-                  <span>立即召喚 AI 拍板救場！</span>
-                </>
-              )}
-            </button>
           </div>
+
+          <button
+            type="button"
+            onClick={handleAiRescue}
+            disabled={aiLoading || members.length === 0}
+            className="apple-btn min-h-[46px] px-5 py-2.5 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white font-semibold text-sm inline-flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 shrink-0"
+          >
+            {aiLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>分析中...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-4 h-4" />
+                <span>AI 幫手決定</span>
+              </>
+            )}
+          </button>
         </div>
 
         {aiError && (
@@ -648,66 +762,65 @@ export function DecisionArena({
           </div>
         )}
 
-        {/* AI Structured Result Card */}
         {session?.aiFinalPick && (
-          <div className="p-5 sm:p-7 space-y-6 bg-white">
-            {/* 1. Final Pick */}
-            <div className="p-5 sm:p-6 rounded-2xl bg-[#FAF8F5] border border-[#E7E2DA] flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-              <div className="space-y-2">
-                <div className="text-xs font-bold text-[#E85D3F]">【AI 終極拍板推介】</div>
-                <h3 className="font-display text-2xl sm:text-3xl font-bold text-[#1C1917]">
+          <div className="p-5 sm:p-6 space-y-5 bg-white">
+            <div className="p-5 rounded-2xl bg-[#F5F5F7] border border-black/[0.08] flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="text-xs font-bold text-[#0071E3]">AI 推介</div>
+                <h3 className="font-display text-2xl sm:text-3xl font-bold text-[#1D1D1F]">
                   {session.aiFinalPick}
                 </h3>
-                <p className="text-sm text-[#6B6560] leading-relaxed">{session.aiSummaryTone}</p>
+                <p className="text-sm text-[#6E6E73]">{session.aiSummaryTone}</p>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  onSearchRestaurants(session.finalSearchKeyword || session.aiFinalPick)
-                }
-                className="min-h-[48px] px-5 py-3 rounded-xl bg-[#E85D3F] hover:bg-[#D44A2C] text-white text-sm font-bold inline-flex items-center justify-center gap-2 shrink-0 transition-colors cursor-pointer"
-              >
-                <MapPin className="w-4 h-4" />
-                <span>喺地圖搵附近「{session.aiFinalPick}」</span>
-              </button>
+              <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void onConfirmMealAndSearch(
+                      session.aiFinalPick,
+                      session.finalSearchKeyword || session.aiFinalPick
+                    )
+                  }
+                  className="apple-btn min-h-[46px] px-5 py-2.5 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <MapPin className="w-4 h-4" />
+                  <span>就食呢樣！搜尋餐廳</span>
+                </button>
+              </div>
             </div>
 
-            {/* 2. Member-by-member breakdown */}
             {session.aiMemberBreakdown && session.aiMemberBreakdown.length > 0 && (
-              <div className="space-y-3">
-                <h4 className="text-sm font-bold text-[#1C1917]">
-                  【點解咁揀？（逐個成員拆解）】
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {session.aiMemberBreakdown.map((line, i) => (
-                    <div
-                      key={`${i}_${line.slice(0, 10)}`}
-                      className="p-3.5 rounded-xl bg-[#FAF8F5] border border-[#E7E2DA] text-sm text-[#1C1917] leading-relaxed"
-                    >
-                      {line}
-                    </div>
-                  ))}
-                </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {session.aiMemberBreakdown.map((line, i) => (
+                  <div
+                    key={`${i}_${line.slice(0, 10)}`}
+                    className="p-3.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-sm text-[#1D1D1F]"
+                  >
+                    {line}
+                  </div>
+                ))}
               </div>
             )}
 
-            {/* 3. Plan B */}
             {session.aiBackupName && (
-              <div className="p-4 sm:p-5 rounded-2xl bg-[#F8FAFC] border border-[#E2E8F0] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="p-4 rounded-2xl bg-[#F5F5F7] border border-black/[0.08] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs font-bold text-[#0284C7]">【後備 B 計劃】</div>
-                  <div className="font-bold text-base text-[#1C1917]">{session.aiBackupName}</div>
-                  <p className="text-xs sm:text-sm text-[#6B6560]">{session.aiBackupReason}</p>
+                  <div className="text-xs font-bold text-[#0071E3]">後備選擇</div>
+                  <div className="font-semibold text-base text-[#1D1D1F]">{session.aiBackupName}</div>
+                  <p className="text-xs text-[#6E6E73]">{session.aiBackupReason}</p>
                 </div>
                 <button
                   type="button"
                   onClick={() =>
-                    onSearchRestaurants(session.aiBackupKeyword || session.aiBackupName)
+                    void onConfirmMealAndSearch(
+                      session.aiBackupName,
+                      session.aiBackupKeyword || session.aiBackupName
+                    )
                   }
-                  className="min-h-[44px] px-4 py-2 rounded-xl bg-white border border-[#CBD5E1] hover:border-[#0284C7] text-xs sm:text-sm font-semibold text-[#1C1917] inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                  className="apple-btn min-h-[42px] px-4 py-2 rounded-xl bg-white border border-black/[0.1] hover:border-[#0071E3] text-xs font-semibold text-[#1D1D1F] inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
                 >
-                  <MapPin className="w-4 h-4 text-[#0284C7]" />
-                  <span>改搜尋 B 計劃餐廳</span>
+                  <MapPin className="w-4 h-4 text-[#0071E3]" />
+                  <span>改食後備選擇</span>
                 </button>
               </div>
             )}

@@ -1,22 +1,27 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MotionConfig } from 'motion/react';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
-import { Loader2, Sparkles } from 'lucide-react';
-import { AuthLanding } from './components/AuthLanding';
+import { Loader2 } from 'lucide-react';
+import { AuthLanding, PendingAnonymousAction } from './components/AuthLanding';
 import { DecisionArena } from './components/DecisionArena';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { RestaurantMapPanel } from './components/RestaurantMapPanel';
 import { RoomLobbyPanel } from './components/RoomLobbyPanel';
-import { ThreeTierFoodSelector } from './components/ThreeTierFoodSelector';
 import { TodayFilterPanel } from './components/TodayFilterPanel';
 import { AppTabId, TopNav } from './components/TopNav';
-import { DEMO_FRIENDS } from './data/hkFoods';
+import { getDefaultMealPeriod, SIX_CUISINE_CATEGORIES } from './data/hkFoods';
 import { auth } from './lib/firebase';
 import {
   createDiningRoom,
+  deleteMealHistoryEntry,
   ensureUserAndDefaultRoom,
   joinRoomByCode,
+  recordRoomMealDecision,
+  rotateRoomInviteCode,
   saveBaselineFavorites,
+  setRoomQrAutoRotate,
   subscribeRoom,
+  subscribeRoomMealHistory7Days,
   subscribeRoomMembers,
   subscribeRoomSession,
   subscribeUserMemberships,
@@ -27,7 +32,8 @@ import {
 import {
   Board,
   BoardMember,
-  DemoFriendProfile,
+  MealHistoryEntry,
+  MealPeriod,
   PriceTier,
   RoomSession,
   UserProfile,
@@ -52,39 +58,18 @@ function MainApp() {
   const [activeBoard, setActiveBoard] = useState<Board | null>(null);
   const [roomMembers, setRoomMembers] = useState<BoardMember[]>([]);
   const [roomSession, setRoomSession] = useState<RoomSession | null>(null);
-
-  // Guest / Demo state
-  const [guestDemoActive, setGuestDemoActive] = useState(false);
-  const [demoMode, setDemoMode] = useState(false);
-  const [guestFavorites, setGuestFavorites] = useState<string[]>([
-    '松屋漢堡扒',
-    '壽司',
-    '越南河粉',
-    '譚仔米線',
-  ]);
-  const [guestTodayFoods, setGuestTodayFoods] = useState<string[]>([
-    '松屋漢堡扒',
-    '壽司',
-    '越南河粉',
-    '譚仔米線',
-  ]);
-  const [guestMoodFilters, setGuestMoodFilters] = useState<string[]>([]);
-  const [guestBudget, setGuestBudget] = useState<PriceTier>('$$');
-  const [guestWalkKm, setGuestWalkKm] = useState<number>(2);
-  const [guestStatus, setGuestStatus] = useState<'picking' | 'ready'>('ready');
-  const [guestSession, setGuestSession] = useState<RoomSession | null>(null);
+  const [mealHistory7Days, setMealHistory7Days] = useState<MealHistoryEntry[]>([]);
 
   const [activeTab, setActiveTab] = useState<AppTabId>('lobby');
   const [mapSearchKeyword, setMapSearchKeyword] = useState<string>('');
-  const [showOnboardingFavs, setShowOnboardingFavs] = useState(false);
-  const [onboardingDraft, setOnboardingDraft] = useState<string[]>([]);
-  const [savingOnboarding, setSavingOnboarding] = useState(false);
   const [pendingJoinCode, setPendingJoinCode] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     const code = new URLSearchParams(window.location.search).get('join');
     return code ? code.trim().toUpperCase() : null;
   });
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const pendingAnonymousActionRef = useRef<PendingAnonymousAction | null>(null);
 
   // Tier 1 & Tier 2 Google Maps Quota Listener
   useEffect(() => {
@@ -138,19 +123,56 @@ function MainApp() {
         setActiveBoard(null);
         setRoomMembers([]);
         setRoomSession(null);
+        setMealHistory7Days([]);
         return;
       }
 
-      setGuestDemoActive(false);
+      const pendingAnon = pendingAnonymousActionRef.current;
+      pendingAnonymousActionRef.current = null;
+
       setBootstrapping(true);
       try {
-        const loadedProfile = await ensureUserAndDefaultRoom(nextUser);
-        if (!loadedProfile.favoriteFoods || loadedProfile.favoriteFoods.length === 0) {
-          setOnboardingDraft([]);
-          setShowOnboardingFavs(true);
+        if (pendingAnon) {
+          const loadedProfile = await ensureUserAndDefaultRoom(
+            nextUser,
+            pendingAnon.nickname,
+            true
+          );
+          if (pendingAnon.type === 'join') {
+            const res = await joinRoomByCode(
+              nextUser,
+              pendingAnon.code,
+              loadedProfile.favoriteFoods || [],
+              pendingAnon.nickname
+            );
+            setActiveBoardId(res.boardId);
+            setPendingJoinCode(null);
+            setActiveTab('filters');
+            showToast(`已加入「${res.boardName}」`);
+          } else {
+            const newId = await createDiningRoom(
+              nextUser,
+              pendingAnon.roomName,
+              '',
+              loadedProfile.favoriteFoods || [],
+              pendingAnon.nickname
+            );
+            setActiveBoardId(newId);
+            setActiveTab('lobby');
+            showToast(`已建立「${pendingAnon.roomName}」`);
+          }
+        } else {
+          await ensureUserAndDefaultRoom(nextUser);
         }
       } catch (err) {
-        showToast(err instanceof Error ? err.message : '初始化個人資料失敗');
+        showToast(err instanceof Error ? err.message : '初始化失敗');
+        if (pendingAnon) {
+          try {
+            await ensureUserAndDefaultRoom(nextUser, pendingAnon.nickname, false);
+          } catch {
+            // Ignore secondary error
+          }
+        }
       } finally {
         setBootstrapping(false);
       }
@@ -189,9 +211,7 @@ function MainApp() {
         if (!active) return;
         setActiveBoardId(res.boardId);
         showToast(
-          res.alreadyMember
-            ? `你已經喺「${res.boardName}」房間入面啦！`
-            : `成功加入「${res.boardName}」飯局！`
+          res.alreadyMember ? `已切換至「${res.boardName}」` : `成功加入「${res.boardName}」`
         );
         if (typeof window !== 'undefined') {
           const url = new URL(window.location.href);
@@ -201,7 +221,7 @@ function MainApp() {
       })
       .catch((err) => {
         if (active) {
-          showToast(err instanceof Error ? err.message : '邀請連結房間無效');
+          showToast(err instanceof Error ? err.message : '房間號碼或 QR Code 已失效');
         }
       });
 
@@ -210,122 +230,90 @@ function MainApp() {
     };
   }, [user, pendingJoinCode, bootstrapping, profile?.favoriteFoods, showToast]);
 
-  // Subscribe active room, members, and session
+  // Subscribe active room, members, session, and 7-day meal history
   useEffect(() => {
     if (!user || !activeBoardId) {
       setActiveBoard(null);
       setRoomMembers([]);
       setRoomSession(null);
+      setMealHistory7Days([]);
       return;
     }
 
     const unsubRoom = subscribeRoom(activeBoardId, setActiveBoard);
     const unsubMembers = subscribeRoomMembers(activeBoardId, setRoomMembers);
     const unsubSession = subscribeRoomSession(activeBoardId, setRoomSession);
+    const unsubHistory = subscribeRoomMealHistory7Days(activeBoardId, setMealHistory7Days);
 
     return () => {
       unsubRoom();
       unsubMembers();
       unsubSession();
+      unsubHistory();
     };
   }, [user, activeBoardId]);
 
-  const effectiveDemoMode = guestDemoActive || demoMode;
-
-  const myMemberRecord = useMemo(() => {
-    if (guestDemoActive && !user) {
-      const guestProfile: DemoFriendProfile = {
-        uid: 'guest_me',
-        displayName: '我 (試玩模式)',
-        photoURL: '',
-        favoriteFoods: guestFavorites,
-        todayFoods: guestTodayFoods,
-        moodFilters: guestMoodFilters,
-        budgetMax: guestBudget,
-        maxWalkKm: guestWalkKm,
-        status: guestStatus,
-      };
-      return guestProfile;
-    }
-    return roomMembers.find((m) => m.uid === user?.uid) || null;
-  }, [
-    guestDemoActive,
-    user,
-    guestFavorites,
-    guestTodayFoods,
-    guestMoodFilters,
-    guestBudget,
-    guestWalkKm,
-    guestStatus,
-    roomMembers,
-  ]);
-
-  const combinedMembers = useMemo<(BoardMember | DemoFriendProfile)[]>(() => {
-    const base: (BoardMember | DemoFriendProfile)[] =
-      guestDemoActive && !user && myMemberRecord ? [myMemberRecord] : [...roomMembers];
-
-    if (effectiveDemoMode) {
-      const existingIds = new Set(base.map((m) => m.uid));
-      for (const friend of DEMO_FRIENDS) {
-        if (!existingIds.has(friend.uid)) {
-          base.push(friend);
-        }
-      }
-    }
-    return base;
-  }, [guestDemoActive, user, myMemberRecord, roomMembers, effectiveDemoMode]);
+  const myMemberRecord = useMemo(
+    () => roomMembers.find((m) => m.uid === user?.uid) || null,
+    [roomMembers, user?.uid]
+  );
 
   const effectiveMaxWalkKm = useMemo(() => {
-    if (combinedMembers.length === 0) return 2;
-    const minKm = Math.min(...combinedMembers.map((m) => m.maxWalkKm || 2));
+    if (roomMembers.length === 0) return 2;
+    const minKm = Math.min(...roomMembers.map((m) => m.maxWalkKm || 2));
     return Math.max(1, Math.min(3, minKm));
-  }, [combinedMembers]);
+  }, [roomMembers]);
 
-  const activeSession = user ? roomSession : guestSession;
+  const recentMeals7DaysNames = useMemo(
+    () => Array.from(new Set(mealHistory7Days.map((e) => e.foodName))),
+    [mealHistory7Days]
+  );
 
   const handleSavePersonalFavorites = async (favs: string[]) => {
-    if (guestDemoActive && !user) {
-      setGuestFavorites(favs);
-      if (guestTodayFoods.length === 0) setGuestTodayFoods(favs);
-      showToast('已更新你嘅個人最愛清單！');
-      return;
-    }
     if (!user) return;
     await saveBaselineFavorites(
       user,
       favs,
       memberships.map((m) => m.boardId)
     );
-    showToast('已儲存你嘅平時最愛美食清單！');
+    showToast('已儲存平時常食清單');
   };
 
   const handleCreateRoom = async (name: string, desc: string) => {
-    if (guestDemoActive && !user) {
-      showToast('目前為免登入 Demo 測試模式；登入後即可建立真實多人房間！');
-      return;
-    }
     if (!user) return;
     const newId = await createDiningRoom(user, name, desc, profile?.favoriteFoods || []);
     setActiveBoardId(newId);
-    showToast(`已建立新飯局「${name}」！`);
+    showToast(`已建立「${name}」`);
   };
 
   const handleJoinRoom = async (code: string) => {
-    if (guestDemoActive && !user) {
-      showToast('目前為免登入 Demo 測試模式；請先登入帳號再輸入房間號碼加入朋友飯局！');
-      return;
-    }
     if (!user) return;
     const res = await joinRoomByCode(user, code, profile?.favoriteFoods || []);
     setActiveBoardId(res.boardId);
     showToast(
-      res.alreadyMember
-        ? `已切換至「${res.boardName}」`
-        : `成功加入「${res.boardName}」！`
+      res.alreadyMember ? `已切換至「${res.boardName}」` : `成功加入「${res.boardName}」`
     );
   };
 
+  const handleRotateInviteCode = async () => {
+    if (!activeBoard) return;
+    await rotateRoomInviteCode(activeBoard);
+  };
+
+  const handleSetQrAutoRotate = async (enabled: boolean) => {
+    if (!activeBoard) return;
+    await setRoomQrAutoRotate(activeBoard.id, enabled);
+  };
+
+  const handleDeleteMealHistory = async (historyId: string) => {
+    if (!activeBoardId) return;
+    await deleteMealHistoryEntry(activeBoardId, historyId);
+  };
+
   const handleSubmitTodayPreferences = async (payload: {
+    mealPeriod: MealPeriod;
+    selectedCuisines: string[];
+    selectedFormats: string[];
     favoriteFoods?: string[];
     todayFoods: string[];
     moodFilters: string[];
@@ -333,15 +321,6 @@ function MainApp() {
     maxWalkKm: number;
     status: 'picking' | 'ready';
   }) => {
-    if (guestDemoActive && !user) {
-      if (payload.favoriteFoods) setGuestFavorites(payload.favoriteFoods);
-      setGuestTodayFoods(payload.todayFoods);
-      setGuestMoodFilters(payload.moodFilters);
-      setGuestBudget(payload.budgetMax);
-      setGuestWalkKm(payload.maxWalkKm);
-      setGuestStatus(payload.status);
-      return;
-    }
     if (!user || !activeBoardId) return;
     await updateMyRoomPreferences(
       activeBoardId,
@@ -351,71 +330,32 @@ function MainApp() {
     );
   };
 
-  const handleUpdateSession = async (patch: Partial<RoomSession>) => {
-    if (guestDemoActive && !user) {
-      setGuestSession((prev) => ({
-        id: 'current',
-        boardId: 'demo_room',
-        spinCount: patch.spinCount ?? prev?.spinCount ?? 0,
-        lastWinner: patch.lastWinner ?? prev?.lastWinner ?? '',
-        rejectedFoods: patch.rejectedFoods ?? prev?.rejectedFoods ?? [],
-        weightMode: patch.weightMode ?? prev?.weightMode ?? 'weighted',
-        finalSearchKeyword: patch.finalSearchKeyword ?? prev?.finalSearchKeyword ?? '',
-        aiFinalPick: patch.aiFinalPick ?? prev?.aiFinalPick ?? '',
-        aiSummaryTone: patch.aiSummaryTone ?? prev?.aiSummaryTone ?? '',
-        aiMemberBreakdown: patch.aiMemberBreakdown ?? prev?.aiMemberBreakdown ?? [],
-        aiBackupName: patch.aiBackupName ?? prev?.aiBackupName ?? '',
-        aiBackupKeyword: patch.aiBackupKeyword ?? prev?.aiBackupKeyword ?? '',
-        aiBackupReason: patch.aiBackupReason ?? prev?.aiBackupReason ?? '',
-        updatedBy: 'guest_me',
-        updatedByName: '我 (試玩模式)',
-        updatedAt: prev?.updatedAt as RoomSession['updatedAt'],
-      }));
-      return;
-    }
+  const handleUpdateSession = async (
+    patch: Partial<RoomSession> & { isSpinResult?: boolean }
+  ) => {
     if (!user || !activeBoardId) return;
     await syncRoomSession(activeBoardId, user, roomSession, patch);
   };
 
-  const handleSearchRestaurants = (keyword: string) => {
-    setMapSearchKeyword(keyword);
+  const handleRecordMealDecision = async (foodName: string) => {
+    if (!user || !activeBoardId) return;
+    await recordRoomMealDecision(activeBoardId, user, foodName);
+  };
+
+  const handleConfirmMealAndSearch = async (foodName: string, searchKeyword: string) => {
+    if (user && activeBoardId && foodName) {
+      try {
+        await recordRoomMealDecision(activeBoardId, user, foodName);
+      } catch {
+        // Still allow navigation to map if history write fails
+      }
+    }
+    setMapSearchKeyword(searchKeyword || foodName);
     setActiveTab('map');
   };
 
   const handleLogout = async () => {
-    if (guestDemoActive && !user) {
-      setGuestDemoActive(false);
-      setDemoMode(false);
-      return;
-    }
     await signOut(auth);
-    setDemoMode(false);
-  };
-
-  const handleCompleteOnboarding = async () => {
-    setSavingOnboarding(true);
-    try {
-      await handleSavePersonalFavorites(onboardingDraft);
-      if (user && activeBoardId && onboardingDraft.length > 0) {
-        await updateMyRoomPreferences(
-          activeBoardId,
-          user,
-          memberships.map((m) => m.boardId),
-          {
-            todayFoods: onboardingDraft,
-            moodFilters: myMemberRecord?.moodFilters || [],
-            budgetMax: myMemberRecord?.budgetMax || '$$',
-            maxWalkKm: myMemberRecord?.maxWalkKm || 2,
-            status: 'ready',
-          }
-        );
-      }
-      setShowOnboardingFavs(false);
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : '儲存失敗');
-    } finally {
-      setSavingOnboarding(false);
-    }
   };
 
   const quotaBanner = quotaExceeded ? (
@@ -439,24 +379,22 @@ function MainApp() {
     return (
       <>
         {quotaBanner}
-        <div className="min-h-screen bg-[#FAF8F5] flex flex-col items-center justify-center gap-3 text-sm text-[#6B6560]">
-          <Loader2 className="w-6 h-6 animate-spin text-[#E85D3F]" />
-          <span>載入《今日食咩好？》中...</span>
+        <div className="min-h-screen bg-[#F5F5F7] flex flex-col items-center justify-center gap-3 text-sm text-[#6E6E73]">
+          <Loader2 className="w-6 h-6 animate-spin text-[#0071E3]" />
+          <span>載入中...</span>
         </div>
       </>
     );
   }
 
-  if (!user && !guestDemoActive) {
+  if (!user) {
     return (
       <>
         {quotaBanner}
         <AuthLanding
           hasPendingJoinCode={pendingJoinCode}
-          onEnterDemoMode={() => {
-            setGuestDemoActive(true);
-            setDemoMode(true);
-            setActiveTab('lobby');
+          onPrepareAnonymousAction={(action) => {
+            pendingAnonymousActionRef.current = action;
           }}
         />
       </>
@@ -464,56 +402,32 @@ function MainApp() {
   }
 
   const currentUserName =
-    profile?.displayName || user?.displayName || user?.email?.split('@')[0] || '我 (試玩模式)';
-  const currentUserPhoto = profile?.photoURL || user?.photoURL || '';
-  const currentUserUid = user?.uid || 'guest_me';
-  const personalFavorites = user ? profile?.favoriteFoods || [] : guestFavorites;
+    profile?.displayName || user.displayName || user.email?.split('@')[0] || '食飯友';
+  const currentUserPhoto = profile?.photoURL || user.photoURL || '';
+  const personalFavorites = profile?.favoriteFoods || [];
   const activeSearchKeyword =
-    mapSearchKeyword || activeSession?.finalSearchKeyword || activeSession?.lastWinner || '';
+    mapSearchKeyword || roomSession?.finalSearchKeyword || roomSession?.lastWinner || '';
 
   return (
-    <div className="min-h-screen bg-[#FAF8F5] text-[#1C1917] flex flex-col">
+    <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] flex flex-col">
       {quotaBanner}
 
       <TopNav
         activeTab={activeTab}
         onChangeTab={setActiveTab}
-        roomName={activeBoard?.name || (guestDemoActive ? '週末銅鑼灣聚餐 (Demo)' : '今日飯局')}
-        inviteCode={activeBoard?.inviteCode || (guestDemoActive ? '882618' : '')}
-        memberCount={combinedMembers.length}
+        roomName={activeBoard?.name || '今日飯局'}
+        inviteCode={activeBoard?.inviteCode || ''}
+        memberCount={roomMembers.length}
         userName={currentUserName}
         userPhoto={currentUserPhoto}
-        demoMode={effectiveDemoMode}
-        isGuestDemo={guestDemoActive && !user}
-        onToggleDemoMode={() => {
-          if (guestDemoActive && !user) {
-            showToast('目前為免登入試玩模式；如需建立或加入真實房間，請先返回登入帳號。');
-            return;
-          }
-          setDemoMode((prev) => !prev);
-        }}
+        isAnonymous={user.isAnonymous}
         onLogout={handleLogout}
         hasMapTarget={Boolean(activeSearchKeyword)}
       />
 
-      {guestDemoActive && !user && (
-        <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-4">
-          <div className="px-4 py-3 rounded-2xl bg-[#FEF3C7] border border-[#F59E0B]/40 text-[#92400E] text-xs sm:text-sm font-medium flex flex-wrap items-center justify-between gap-2">
-            <span>目前為「免登入 Demo 試玩模式」，建立／加入真實朋友飯局需先登入帳號。</span>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="px-3 py-1.5 rounded-xl bg-[#1C1917] text-white text-xs font-bold hover:bg-[#292524] transition-colors cursor-pointer"
-            >
-              立即去登入真實帳號
-            </button>
-          </div>
-        </div>
-      )}
-
       {toastMsg && (
         <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-4">
-          <div className="px-4 py-3 rounded-2xl bg-[#1C1917] text-white text-xs sm:text-sm font-semibold shadow-sm flex items-center justify-between">
+          <div className="px-4 py-3 rounded-2xl bg-[#1D1D1F] text-white text-xs sm:text-sm font-semibold shadow-sm flex items-center justify-between">
             <span>{toastMsg}</span>
             <button
               type="button"
@@ -526,73 +440,28 @@ function MainApp() {
         </div>
       )}
 
-      {/* First-Time Personal Baseline Favorites Onboarding Card */}
-      {showOnboardingFavs && user && (
-        <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-5">
-          <div className="bg-white border-2 border-[#E85D3F] rounded-3xl p-5 sm:p-7 shadow-md space-y-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="inline-flex items-center gap-1.5 text-xs font-bold text-[#E85D3F] mb-1">
-                  <Sparkles className="w-4 h-4" />
-                  <span>歡迎嚟到《今日食咩好？》· 首次個人設定</span>
-                </div>
-                <h2 className="font-display text-xl sm:text-2xl font-bold text-[#1C1917]">
-                  先揀低你「平時最愛食」嘅美食清單
-                </h2>
-                <p className="text-xs sm:text-sm text-[#6B6560] mt-1">
-                  設定一次之後，每次入任何朋友飯局都會自動幫你勾選好，撳幾秒就搞掂！
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowOnboardingFavs(false)}
-                className="text-xs font-semibold text-[#6B6560] hover:text-[#1C1917] cursor-pointer"
-              >
-                遲啲先揀
-              </button>
-            </div>
-
-            <ThreeTierFoodSelector
-              selectedFoods={onboardingDraft}
-              onChange={setOnboardingDraft}
-              title="揀幾款你平時成日食嘅餐廳或菜式"
-              subtitle="撳一撳熱門標籤、切換菜系分頁，或者自己打冷門美食入去"
-            />
-
-            <div className="flex justify-end gap-2 pt-3 border-t border-[#E7E2DA]">
-              <button
-                type="button"
-                onClick={handleCompleteOnboarding}
-                disabled={savingOnboarding || onboardingDraft.length === 0}
-                className="min-h-[46px] px-6 py-2.5 rounded-xl bg-[#E85D3F] hover:bg-[#D44A2C] text-white text-sm font-bold inline-flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {savingOnboarding && <Loader2 className="w-4 h-4 animate-spin" />}
-                <span>儲存個人最愛並入房 ({onboardingDraft.length})</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <main className="flex-1 max-w-6xl w-full mx-auto px-3 sm:px-6 py-5 sm:py-7 pb-24 md:pb-12">
         {bootstrapping ? (
-          <div className="py-16 flex flex-col items-center justify-center gap-3 text-sm text-[#6B6560]">
-            <Loader2 className="w-6 h-6 animate-spin text-[#E85D3F]" />
-            <span>準備緊你嘅即時飯局房間...</span>
+          <div className="py-16 flex flex-col items-center justify-center gap-3 text-sm text-[#6E6E73]">
+            <Loader2 className="w-6 h-6 animate-spin text-[#0071E3]" />
+            <span>準備緊房間...</span>
           </div>
         ) : (
           <>
             {activeTab === 'lobby' && (
               <RoomLobbyPanel
-                currentUserUid={currentUserUid}
+                currentUserUid={user.uid}
                 activeBoard={activeBoard}
                 memberships={memberships}
-                members={combinedMembers}
+                members={roomMembers}
+                mealHistory7Days={mealHistory7Days}
                 personalFavorites={personalFavorites}
-                demoMode={effectiveDemoMode}
                 onSelectRoom={(boardId) => setActiveBoardId(boardId)}
                 onCreateRoom={handleCreateRoom}
                 onJoinRoom={handleJoinRoom}
+                onRotateInviteCode={handleRotateInviteCode}
+                onSetQrAutoRotate={handleSetQrAutoRotate}
+                onDeleteMealHistory={handleDeleteMealHistory}
                 onSavePersonalFavorites={handleSavePersonalFavorites}
                 onGoToFilters={() => setActiveTab('filters')}
                 onGoToArena={() => setActiveTab('arena')}
@@ -601,12 +470,20 @@ function MainApp() {
 
             {activeTab === 'filters' && (
               <TodayFilterPanel
+                initialMealPeriod={myMemberRecord?.mealPeriod || getDefaultMealPeriod()}
+                initialSelectedCuisines={
+                  myMemberRecord?.selectedCuisines?.length
+                    ? myMemberRecord.selectedCuisines
+                    : [SIX_CUISINE_CATEGORIES[0].id]
+                }
+                initialSelectedFormats={myMemberRecord?.selectedFormats || []}
                 initialTodayFoods={myMemberRecord?.todayFoods || personalFavorites}
                 initialFavoriteFoods={personalFavorites}
                 initialMoodFilters={myMemberRecord?.moodFilters || []}
                 initialBudgetMax={myMemberRecord?.budgetMax || '$$'}
                 initialMaxWalkKm={myMemberRecord?.maxWalkKm || 2}
                 initialStatus={myMemberRecord?.status || 'picking'}
+                recentMeals7Days={recentMeals7DaysNames}
                 onSubmitPreferences={handleSubmitTodayPreferences}
                 onGoToArena={() => setActiveTab('arena')}
               />
@@ -615,10 +492,12 @@ function MainApp() {
             {activeTab === 'arena' && (
               <DecisionArena
                 roomName={activeBoard?.name || '今日飯局'}
-                members={combinedMembers}
-                session={activeSession}
+                members={roomMembers}
+                session={roomSession}
+                recentMeals7Days={recentMeals7DaysNames}
                 onUpdateSession={handleUpdateSession}
-                onSearchRestaurants={handleSearchRestaurants}
+                onRecordMealDecision={handleRecordMealDecision}
+                onConfirmMealAndSearch={handleConfirmMealAndSearch}
               />
             )}
 
@@ -641,7 +520,9 @@ function MainApp() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <MainApp />
+      <MotionConfig reducedMotion="user">
+        <MainApp />
+      </MotionConfig>
     </ErrorBoundary>
   );
 }

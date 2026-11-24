@@ -8,18 +8,26 @@ import {
   Loader2,
   SlidersHorizontal,
 } from 'lucide-react';
-import { HK_MOOD_FILTERS } from '../data/hkFoods';
-import { PRICE_TIERS, PriceTier } from '../types';
-import { ThreeTierFoodSelector } from './ThreeTierFoodSelector';
+import { getDefaultMealPeriod, HK_MOOD_FILTERS } from '../data/hkFoods';
+import { MealPeriod, PRICE_TIERS, PriceTier } from '../types';
+import { CuisineFoodSelector } from './CuisineFoodSelector';
+import { DishFormatSelector } from './DishFormatSelector';
 
 interface TodayFilterPanelProps {
+  initialMealPeriod?: MealPeriod;
+  initialSelectedCuisines: string[];
+  initialSelectedFormats?: string[];
   initialTodayFoods: string[];
   initialFavoriteFoods: string[];
   initialMoodFilters: string[];
   initialBudgetMax: PriceTier;
   initialMaxWalkKm: number;
   initialStatus: 'picking' | 'ready';
+  recentMeals7Days: string[];
   onSubmitPreferences: (payload: {
+    mealPeriod: MealPeriod;
+    selectedCuisines: string[];
+    selectedFormats: string[];
     favoriteFoods?: string[];
     todayFoods: string[];
     moodFilters: string[];
@@ -31,22 +39,31 @@ interface TodayFilterPanelProps {
 }
 
 const BUDGET_DESCRIPTIONS: Record<PriceTier, string> = {
-  $: 'HK$60 以下（快餐 / 茶記）',
-  $$: 'HK$61–$150（日常聚餐）',
-  $$$: 'HK$151–$350（燒肉 / 邊爐）',
-  $$$$: 'HK$350 以上（慶祝大餐）',
+  $: 'HK$60 以下',
+  $$: 'HK$61–$150',
+  $$$: 'HK$151–$350',
+  $$$$: 'HK$350 以上',
 };
 
 export function TodayFilterPanel({
+  initialMealPeriod,
+  initialSelectedCuisines,
+  initialSelectedFormats = [],
   initialTodayFoods,
   initialFavoriteFoods,
   initialMoodFilters,
   initialBudgetMax,
   initialMaxWalkKm,
   initialStatus,
+  recentMeals7Days,
   onSubmitPreferences,
   onGoToArena,
 }: TodayFilterPanelProps) {
+  const [mealPeriod, setMealPeriod] = useState<MealPeriod>(
+    initialMealPeriod || getDefaultMealPeriod()
+  );
+  const [selectedCuisines, setSelectedCuisines] = useState<string[]>(initialSelectedCuisines);
+  const [selectedFormats, setSelectedFormats] = useState<string[]>(initialSelectedFormats);
   const [todayFoods, setTodayFoods] = useState<string[]>(
     initialTodayFoods.length > 0 ? initialTodayFoods : initialFavoriteFoods
   );
@@ -59,17 +76,44 @@ export function TodayFilterPanel({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    setMealPeriod(initialMealPeriod || getDefaultMealPeriod());
+    setSelectedCuisines(initialSelectedCuisines);
+    setSelectedFormats(initialSelectedFormats);
     setTodayFoods(initialTodayFoods.length > 0 ? initialTodayFoods : initialFavoriteFoods);
     setMoodFilters(initialMoodFilters);
     setBudgetMax(initialBudgetMax || '$$');
     setMaxWalkKm(initialMaxWalkKm || 2);
-  }, [initialTodayFoods, initialFavoriteFoods, initialMoodFilters, initialBudgetMax, initialMaxWalkKm]);
+  }, [
+    initialMealPeriod,
+    initialSelectedCuisines,
+    initialSelectedFormats,
+    initialTodayFoods,
+    initialFavoriteFoods,
+    initialMoodFilters,
+    initialBudgetMax,
+    initialMaxWalkKm,
+  ]);
 
   const toggleMood = (id: string) => {
     setSavedNotice(null);
     setMoodFilters((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
+  };
+
+  const handleToggleTodayFood = (food: string) => {
+    setSavedNotice(null);
+    setErrorMsg(null);
+    setTodayFoods((prev) => {
+      if (prev.includes(food)) {
+        return prev.filter((f) => f !== food);
+      }
+      if (prev.length >= 30) {
+        setErrorMsg('最多可選擇 30 款菜式');
+        return prev;
+      }
+      return [...prev, food];
+    });
   };
 
   const handleAddCustomToBaseline = (customFood: string) => {
@@ -80,8 +124,13 @@ export function TodayFilterPanel({
     setErrorMsg(null);
     setSavedNotice(null);
 
-    if (status === 'ready' && todayFoods.length === 0) {
-      setErrorMsg('請最少揀 1 款「今日想食」嘅美食，再提交俾大家轉輪盤！');
+    if (
+      status === 'ready' &&
+      todayFoods.length === 0 &&
+      selectedCuisines.length === 0 &&
+      selectedFormats.length === 0
+    ) {
+      setErrorMsg('請最少揀 1 個菜系、食物類型或 1 款想食嘅菜式。');
       return;
     }
 
@@ -93,6 +142,9 @@ export function TodayFilterPanel({
           : undefined;
 
       await onSubmitPreferences({
+        mealPeriod,
+        selectedCuisines,
+        selectedFormats,
         favoriteFoods: mergedFavorites,
         todayFoods,
         moodFilters,
@@ -102,17 +154,13 @@ export function TodayFilterPanel({
       });
 
       setAddedCustomFoods([]);
-      setSavedNotice(
-        status === 'ready'
-          ? '已提交你嘅今日美食同狀態篩選！所有成員會即時見到。'
-          : '已暫存你嘅選擇（狀態：揀緊食咩...）'
-      );
+      setSavedNotice(status === 'ready' ? '已提交今日選擇並儲存至共用輪盤' : '已暫存');
 
       if (goArenaAfter) {
         onGoToArena();
       }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : '儲存失敗，請再試一次。');
+      setErrorMsg(err instanceof Error ? err.message : '儲存失敗');
     } finally {
       setSaving(false);
     }
@@ -120,54 +168,74 @@ export function TodayFilterPanel({
 
   return (
     <div className="space-y-6">
-      {/* Section 1: Today's Foods (auto-preselected from personal favorites) */}
-      <section className="bg-white border border-[#E7E2DA] rounded-3xl p-5 sm:p-7 shadow-xs">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-[#E7E2DA]">
+      {/* Section 1: Meal Period + 6 Cuisines + Per-Cuisine Dishes */}
+      <section className="bg-white border border-black/[0.08] rounded-[22px] p-5 sm:p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)] space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-black/[0.08]">
           <div>
-            <span className="text-xs font-bold text-[#E85D3F]">步驟 1 · 揀今日想食</span>
-            <h2 className="font-display text-xl sm:text-2xl font-bold text-[#1C1917]">
-              今日有咩啱食？
+            <h2 className="font-display text-xl sm:text-2xl font-bold text-[#1D1D1F]">
+              揀今日想食
             </h2>
+            <p className="text-xs text-[#6E6E73] mt-0.5">
+              揀好後按「儲存並去輪盤」，同房成員會即時見到你嘅選擇
+            </p>
           </div>
           <span
-            className={`px-3 py-1 rounded-lg text-xs font-bold ${
+            className={`px-3 py-1 rounded-lg text-xs font-semibold ${
               initialStatus === 'ready'
                 ? 'bg-[#DCFCE7] text-[#15803D]'
                 : 'bg-[#FEF3C7] text-[#B45309]'
             }`}
           >
-            目前狀態：{initialStatus === 'ready' ? '已提交' : '揀緊食咩...'}
+            {initialStatus === 'ready' ? '已提交至輪盤' : '揀緊食咩...'}
           </span>
         </div>
 
-        <ThreeTierFoodSelector
+        <CuisineFoodSelector
+          mealPeriod={mealPeriod}
+          onChangeMealPeriod={(next) => {
+            setSavedNotice(null);
+            setMealPeriod(next);
+          }}
+          selectedCuisines={selectedCuisines}
+          onChangeCuisines={(next) => {
+            setSavedNotice(null);
+            setSelectedCuisines(next);
+          }}
           selectedFoods={todayFoods}
-          onChange={(next) => {
+          onChangeFoods={(next) => {
             setSavedNotice(null);
             setTodayFoods(next);
           }}
+          recentMeals7Days={recentMeals7Days}
           onAddCustomFood={handleAddCustomToBaseline}
-          title="三層式快速點選（已自動帶入你嘅平時最愛）"
-          subtitle="可自由增減今餐想食嘅項目；自訂加入嘅冷門美食亦會自動幫你儲低落個人最愛清單。"
+          layoutIdPrefix="today"
         />
       </section>
 
-      {/* Section 2: 10 HK Mood Filters */}
-      <section className="bg-white border border-[#E7E2DA] rounded-3xl p-5 sm:p-7 shadow-xs space-y-4">
-        <div className="flex items-start gap-2.5">
-          <SlidersHorizontal className="w-5 h-5 text-[#E85D3F] shrink-0 mt-1" />
-          <div>
-            <span className="text-xs font-bold text-[#E85D3F]">步驟 2 · 今日飲食狀態篩選與禁忌</span>
-            <h2 className="font-display text-xl sm:text-2xl font-bold text-[#1C1917]">
-              今日特別要求（支援多選）
-            </h2>
-            <p className="text-xs sm:text-sm text-[#6B6560] mt-0.5">
-              幸運輪盤會自動剔除同大家禁忌衝突嘅食物，AI 救場亦會逐個拆解你嘅要求。
-            </p>
-          </div>
+      {/* Section 2: Standalone Dish Format Selector */}
+      <DishFormatSelector
+        mealPeriod={mealPeriod}
+        selectedCuisines={selectedCuisines}
+        selectedFormats={selectedFormats}
+        onChangeFormats={(next) => {
+          setSavedNotice(null);
+          setSelectedFormats(next);
+        }}
+        selectedFoods={todayFoods}
+        onToggleFood={handleToggleTodayFood}
+        recentMeals7Days={recentMeals7Days}
+      />
+
+      {/* Section 3: Mood & Dietary Filters */}
+      <section className="bg-white border border-black/[0.08] rounded-[22px] p-5 sm:p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)] space-y-4">
+        <div className="flex items-center gap-2">
+          <SlidersHorizontal className="w-5 h-5 text-[#0071E3]" />
+          <h2 className="font-display text-lg sm:text-xl font-bold text-[#1D1D1F]">
+            今日要求 / 禁忌（可多選）
+          </h2>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
           {HK_MOOD_FILTERS.map((mood) => {
             const active = moodFilters.includes(mood.id);
             return (
@@ -175,37 +243,34 @@ export function TodayFilterPanel({
                 key={mood.id}
                 type="button"
                 onClick={() => toggleMood(mood.id)}
-                className={`min-h-[56px] p-3.5 rounded-2xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
+                className={`apple-btn min-h-[44px] px-3 py-2 rounded-xl border text-left flex items-center gap-2 cursor-pointer ${
                   active
-                    ? 'bg-[#FFF5F2] border-[#E85D3F] shadow-xs'
-                    : 'bg-[#FAF8F5] border-[#E7E2DA] hover:bg-white'
+                    ? 'bg-[#0071E3]/[0.08] border-[#0071E3] text-[#1D1D1F]'
+                    : 'bg-[#F5F5F7] border-black/[0.07] text-[#1D1D1F] hover:bg-[#EBEBF0]'
                 }`}
               >
                 <div
-                  className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 mt-0.5 transition-colors ${
+                  className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
                     active
-                      ? 'bg-[#E85D3F] border-[#E85D3F] text-white'
-                      : 'bg-white border-[#D6CFC5]'
+                      ? 'bg-[#0071E3] border-[#0071E3] text-white'
+                      : 'bg-white border-black/20'
                   }`}
                 >
-                  {active && <Check className="w-3.5 h-3.5" />}
+                  {active && <Check className="w-3 h-3" />}
                 </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-bold text-[#1C1917]">{mood.label}</div>
-                  <div className="text-xs text-[#6B6560] mt-0.5">{mood.hint}</div>
-                </div>
+                <span className="text-xs font-semibold truncate">{mood.label}</span>
               </button>
             );
           })}
         </div>
       </section>
 
-      {/* Section 3: Budget & Walking Distance Sliders */}
-      <section className="bg-white border border-[#E7E2DA] rounded-3xl p-5 sm:p-7 shadow-xs grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Section 4: Budget & Distance */}
+      <section className="bg-white border border-black/[0.08] rounded-[22px] p-5 sm:p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)] grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <Coins className="w-5 h-5 text-[#F59E0B]" />
-            <h3 className="font-bold text-base text-[#1C1917]">每人預算上限</h3>
+            <Coins className="w-5 h-5 text-[#FF9500]" />
+            <h3 className="font-semibold text-base text-[#1D1D1F]">每人預算上限</h3>
           </div>
           <div className="grid grid-cols-4 gap-2">
             {PRICE_TIERS.map((tier) => {
@@ -218,10 +283,10 @@ export function TodayFilterPanel({
                     setSavedNotice(null);
                     setBudgetMax(tier);
                   }}
-                  className={`min-h-[46px] rounded-xl border font-mono-tabular text-sm font-bold transition-colors cursor-pointer ${
+                  className={`apple-btn min-h-[44px] rounded-xl border font-mono-tabular text-sm font-bold cursor-pointer ${
                     active
-                      ? 'bg-[#1C1917] border-[#1C1917] text-white'
-                      : 'bg-[#FAF8F5] border-[#E7E2DA] text-[#1C1917] hover:border-[#1C1917]/40'
+                      ? 'bg-[#1D1D1F] border-[#1D1D1F] text-white'
+                      : 'bg-[#F5F5F7] border-black/[0.08] text-[#1D1D1F] hover:bg-[#EBEBF0]'
                   }`}
                 >
                   {tier}
@@ -229,17 +294,17 @@ export function TodayFilterPanel({
               );
             })}
           </div>
-          <p className="text-xs text-[#6B6560]">{BUDGET_DESCRIPTIONS[budgetMax]}</p>
+          <p className="text-xs text-[#6E6E73]">{BUDGET_DESCRIPTIONS[budgetMax]}</p>
         </div>
 
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Footprints className="w-5 h-5 text-[#E85D3F]" />
-              <h3 className="font-bold text-base text-[#1C1917]">最多願意行幾遠？</h3>
+              <Footprints className="w-5 h-5 text-[#0071E3]" />
+              <h3 className="font-semibold text-base text-[#1D1D1F]">搜尋範圍半徑</h3>
             </div>
-            <span className="px-2.5 py-1 rounded-lg bg-[#FAF8F5] border border-[#E7E2DA] font-mono-tabular text-sm font-bold text-[#E85D3F]">
-              {maxWalkKm} 公里內
+            <span className="px-2.5 py-1 rounded-lg bg-[#F5F5F7] border border-black/[0.08] font-mono-tabular text-sm font-bold text-[#0071E3]">
+              {maxWalkKm} km
             </span>
           </div>
           <input
@@ -252,11 +317,11 @@ export function TodayFilterPanel({
               setSavedNotice(null);
               setMaxWalkKm(parseFloat(e.target.value));
             }}
-            className="w-full accent-[#E85D3F] cursor-pointer h-2"
+            className="w-full accent-[#0071E3] cursor-pointer h-2"
           />
-          <div className="flex justify-between text-xs text-[#6B6560] font-mono-tabular">
-            <span>1.0 km（約 12 分鐘）</span>
-            <span>2.0 km（約 25 分鐘）</span>
+          <div className="flex justify-between text-xs text-[#6E6E73] font-mono-tabular">
+            <span>1.0 km</span>
+            <span>2.0 km</span>
             <span>3.0 km</span>
           </div>
         </div>
@@ -275,27 +340,26 @@ export function TodayFilterPanel({
         </div>
       )}
 
-      {/* Submit Bar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3">
         <button
           type="button"
           onClick={() => handleSave('picking', false)}
           disabled={saving}
-          className="min-h-[48px] px-5 py-3 rounded-xl border border-[#E7E2DA] bg-white hover:bg-[#FAF8F5] text-sm font-semibold text-[#1C1917] cursor-pointer disabled:opacity-60"
+          className="apple-btn min-h-[46px] px-5 py-2.5 rounded-xl border border-black/[0.1] bg-white hover:bg-[#F5F5F7] text-sm font-semibold text-[#1D1D1F] cursor-pointer disabled:opacity-60"
         >
-          先暫存（揀緊食咩...）
+          暫存進度
         </button>
         <button
           type="button"
           onClick={() => handleSave('ready', true)}
           disabled={saving}
-          className="min-h-[48px] px-6 py-3 rounded-xl bg-[#E85D3F] hover:bg-[#D44A2C] text-white text-sm font-bold inline-flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer disabled:opacity-60"
+          className="apple-btn min-h-[46px] px-6 py-2.5 rounded-xl bg-[#0071E3] hover:bg-[#0077ED] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 shadow-sm cursor-pointer disabled:opacity-60"
         >
           {saving ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
             <>
-              <span>提交今日選擇並去轉輪盤</span>
+              <span>儲存至輪盤並前往決定</span>
               <ArrowRight className="w-4 h-4" />
             </>
           )}

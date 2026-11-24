@@ -46,6 +46,12 @@ service cloud.firestore {
       );
     }
 
+    function isValidCuisineList(listData) {
+      return listData is list && listData.size() <= 6 && (
+        listData.size() == 0 || (listData[0] is string && listData[0].size() >= 1 && listData[0].size() <= 30)
+      );
+    }
+
     function isValidMoodList(listData) {
       return listData is list && listData.size() <= 10 && (
         listData.size() == 0 || (listData[0] is string && listData[0].size() >= 1 && listData[0].size() <= 40)
@@ -77,13 +83,14 @@ service cloud.firestore {
     }
 
     function isValidBoard(data) {
-      return data.keys().hasAll(['id', 'name', 'description', 'ownerId', 'inviteCode', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'name', 'description', 'ownerId', 'inviteCode', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll(['id', 'name', 'description', 'ownerId', 'inviteCode', 'qrAutoRotate', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'description', 'ownerId', 'inviteCode', 'qrAutoRotate', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 60
         && data.description is string && data.description.size() <= 160
         && isValidId(data.ownerId)
         && isValidInviteCode(data.inviteCode)
+        && data.qrAutoRotate is bool
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -102,13 +109,13 @@ service cloud.firestore {
     function isValidBoardMember(data) {
       return data.keys().hasAll([
           'uid', 'boardId', 'boardName', 'displayName', 'photoURL', 'role',
-          'favoriteFoods', 'todayFoods', 'moodFilters', 'budgetMax', 'maxWalkKm', 'status',
-          'inviteCode', 'joinedAt', 'updatedAt'
+          'selectedCuisines', 'favoriteFoods', 'todayFoods', 'moodFilters',
+          'budgetMax', 'maxWalkKm', 'status', 'inviteCode', 'joinedAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
           'uid', 'boardId', 'boardName', 'displayName', 'photoURL', 'role',
-          'favoriteFoods', 'todayFoods', 'moodFilters', 'budgetMax', 'maxWalkKm', 'status',
-          'inviteCode', 'joinedAt', 'updatedAt'
+          'mealPeriod', 'selectedCuisines', 'selectedFormats', 'favoriteFoods', 'todayFoods', 'moodFilters',
+          'budgetMax', 'maxWalkKm', 'status', 'inviteCode', 'joinedAt', 'updatedAt'
         ])
         && isValidId(data.uid)
         && isValidId(data.boardId)
@@ -116,6 +123,9 @@ service cloud.firestore {
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
         && data.photoURL is string && data.photoURL.size() <= 500
         && data.role in ['owner', 'editor']
+        && (!('mealPeriod' in data) || data.mealPeriod in ['breakfast', 'lunch', 'dinner'])
+        && isValidCuisineList(data.selectedCuisines)
+        && (!('selectedFormats' in data) || isValidCuisineList(data.selectedFormats))
         && isValidFoodList(data.favoriteFoods)
         && isValidFoodList(data.todayFoods)
         && isValidMoodList(data.moodFilters)
@@ -134,7 +144,8 @@ service cloud.firestore {
           'aiBackupName', 'aiBackupKeyword', 'aiBackupReason', 'updatedBy', 'updatedByName', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'id', 'boardId', 'spinCount', 'lastWinner', 'rejectedFoods', 'weightMode',
+          'id', 'boardId', 'spinCount', 'lastWinner', 'lastSpunByName', 'lastSpunAt',
+          'rejectedFoods', 'weightMode',
           'finalSearchKeyword', 'aiFinalPick', 'aiSummaryTone', 'aiMemberBreakdown',
           'aiBackupName', 'aiBackupKeyword', 'aiBackupReason', 'updatedBy', 'updatedByName', 'updatedAt'
         ])
@@ -142,6 +153,8 @@ service cloud.firestore {
         && isValidId(data.boardId)
         && data.spinCount is number && data.spinCount >= 0 && data.spinCount <= 1000
         && data.lastWinner is string && data.lastWinner.size() <= 60
+        && (!('lastSpunByName' in data) || (data.lastSpunByName is string && data.lastSpunByName.size() <= 60))
+        && (!('lastSpunAt' in data) || data.lastSpunAt is timestamp)
         && isValidFoodList(data.rejectedFoods)
         && data.weightMode in ['weighted', 'equal']
         && data.finalSearchKeyword is string && data.finalSearchKeyword.size() <= 80
@@ -155,6 +168,17 @@ service cloud.firestore {
         && data.updatedBy == request.auth.uid
         && data.updatedByName is string && data.updatedByName.size() >= 1 && data.updatedByName.size() <= 60
         && data.updatedAt is timestamp;
+    }
+
+    function isValidMealHistory(data) {
+      return data.keys().hasAll(['id', 'boardId', 'foodName', 'decidedBy', 'decidedAt'])
+        && data.keys().hasOnly(['id', 'boardId', 'foodName', 'decidedBy', 'decidedAt'])
+        && isValidId(data.id)
+        && isValidId(data.boardId)
+        && data.foodName is string && data.foodName.size() >= 1 && data.foodName.size() <= 60
+        && isValidId(data.decidedBy)
+        && data.decidedBy == request.auth.uid
+        && data.decidedAt is timestamp;
     }
 
     // --- Collection Rules ---
@@ -174,7 +198,7 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'favoriteFoods', 'updatedAt']);
     }
 
-    // 2. Invite Lookup Directory (Get by exact 6-digit code only, no listing)
+    // 2. Invite Lookup Directory
     match /invites/{inviteCode} {
       allow get: if isSignedIn() && isValidInviteCode(inviteCode);
       allow create: if isSignedIn() && isValidInviteCode(inviteCode)
@@ -216,10 +240,16 @@ service cloud.firestore {
         && existing().ownerId == request.auth.uid
         && incoming().id == existing().id
         && incoming().ownerId == existing().ownerId
-        && incoming().inviteCode == existing().inviteCode
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'inviteCode', 'qrAutoRotate', 'updatedAt'])
+        && (
+          incoming().inviteCode == existing().inviteCode
+          || (
+            existsAfter(/databases/$(database)/documents/invites/$(incoming().inviteCode))
+            && getAfter(/databases/$(database)/documents/invites/$(incoming().inviteCode)).data.boardId == boardId
+          )
+        );
       allow delete: if isValidId(boardId) && isSignedIn() && existing().ownerId == request.auth.uid;
 
       // 4a. Room Members
@@ -249,8 +279,9 @@ service cloud.firestore {
           && incoming().joinedAt == existing().joinedAt
           && incoming().updatedAt == request.time
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'displayName', 'photoURL', 'favoriteFoods', 'todayFoods',
-            'moodFilters', 'budgetMax', 'maxWalkKm', 'status', 'boardName', 'updatedAt'
+            'displayName', 'photoURL', 'mealPeriod', 'selectedCuisines', 'selectedFormats',
+            'favoriteFoods', 'todayFoods', 'moodFilters', 'budgetMax', 'maxWalkKm',
+            'status', 'boardName', 'updatedAt'
           ]);
         allow delete: if isSignedIn() && isValidId(boardId) && isValidId(memberId)
           && ((memberId == request.auth.uid && existing().role != 'owner') || isBoardOwner(boardId));
@@ -266,7 +297,8 @@ service cloud.firestore {
           && isValidRoomSession(incoming())
           && incoming().id == sessionId
           && incoming().boardId == boardId
-          && incoming().updatedAt == request.time;
+          && incoming().updatedAt == request.time
+          && (!('lastSpunAt' in incoming()) || incoming().lastSpunAt == request.time);
         allow update: if isSignedIn() && isValidId(boardId) && isValidId(sessionId)
           && sessionId == 'current'
           && isBoardMember(boardId)
@@ -274,12 +306,27 @@ service cloud.firestore {
           && incoming().id == existing().id
           && incoming().boardId == existing().boardId
           && incoming().updatedAt == request.time
+          && (!('lastSpunAt' in incoming()) || incoming().lastSpunAt == request.time || ('lastSpunAt' in existing() && incoming().lastSpunAt == existing().lastSpunAt))
           && incoming().diff(existing()).affectedKeys().hasOnly([
-            'spinCount', 'lastWinner', 'rejectedFoods', 'weightMode',
+            'spinCount', 'lastWinner', 'lastSpunByName', 'lastSpunAt',
+            'rejectedFoods', 'weightMode',
             'finalSearchKeyword', 'aiFinalPick', 'aiSummaryTone', 'aiMemberBreakdown',
             'aiBackupName', 'aiBackupKeyword', 'aiBackupReason', 'updatedBy', 'updatedByName', 'updatedAt'
           ]);
         allow delete: if isSignedIn() && isValidId(boardId) && isBoardOwner(boardId);
+      }
+
+      // 4c. 7-Day Non-Repeat Meal History
+      match /mealHistory/{historyId} {
+        allow get: if isValidId(boardId) && isValidId(historyId) && isBoardMember(boardId);
+        allow list: if isBoardMember(boardId);
+        allow create: if isSignedIn() && isValidId(boardId) && isValidId(historyId)
+          && isBoardMember(boardId)
+          && isValidMealHistory(incoming())
+          && incoming().id == historyId
+          && incoming().boardId == boardId
+          && incoming().decidedAt == request.time;
+        allow delete: if isValidId(boardId) && isValidId(historyId) && isBoardMember(boardId);
       }
     }
   }

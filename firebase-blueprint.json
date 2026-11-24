@@ -2,7 +2,7 @@
   "entities": {
     "UserProfile": {
       "title": "UserProfile",
-      "description": "Private user account profile and personal baseline favorite foods.",
+      "description": "User profile and personal favorite foods.",
       "type": "object",
       "properties": {
         "uid": {
@@ -25,7 +25,7 @@
         },
         "favoriteFoods": {
           "type": "array",
-          "description": "Personal everyday favorite foods (max 30 items, each 1-40 chars)."
+          "description": "Personal favorite foods (max 30 items, each 1-40 chars)."
         },
         "createdAt": {
           "type": "string",
@@ -67,6 +67,9 @@
           "pattern": "^[A-Z0-9]{6,12}$",
           "maxLength": 12
         },
+        "qrAutoRotate": {
+          "type": "boolean"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -76,7 +79,7 @@
           "format": "date-time"
         }
       },
-      "required": ["id", "name", "description", "ownerId", "inviteCode", "createdAt", "updatedAt"]
+      "required": ["id", "name", "description", "ownerId", "inviteCode", "qrAutoRotate", "createdAt", "updatedAt"]
     },
     "Invite": {
       "title": "Invite",
@@ -112,7 +115,7 @@
     },
     "BoardMember": {
       "title": "BoardMember",
-      "description": "A collaborator participating in a dining room with today's selections and mood filters.",
+      "description": "A collaborator participating in a dining room with selected cuisines, foods, and mood filters.",
       "type": "object",
       "properties": {
         "uid": {
@@ -142,6 +145,18 @@
         "role": {
           "type": "string",
           "enum": ["owner", "editor"]
+        },
+        "mealPeriod": {
+          "type": "string",
+          "enum": ["breakfast", "lunch", "dinner"]
+        },
+        "selectedCuisines": {
+          "type": "array",
+          "description": "Selected cuisine category IDs (max 6 items)."
+        },
+        "selectedFormats": {
+          "type": "array",
+          "description": "Selected dish format IDs such as rice, noodles, soup_hotpot (max 6 items)."
         },
         "favoriteFoods": {
           "type": "array",
@@ -187,6 +202,7 @@
         "displayName",
         "photoURL",
         "role",
+        "selectedCuisines",
         "favoriteFoods",
         "todayFoods",
         "moodFilters",
@@ -219,6 +235,14 @@
         "lastWinner": {
           "type": "string",
           "maxLength": 60
+        },
+        "lastSpunByName": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "lastSpunAt": {
+          "type": "string",
+          "format": "date-time"
         },
         "rejectedFoods": {
           "type": "array",
@@ -289,6 +313,38 @@
         "updatedByName",
         "updatedAt"
       ]
+    },
+    "MealHistory": {
+      "title": "MealHistory",
+      "description": "Confirmed meal record for a room used to avoid repeating dishes within 7 days.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "boardId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "foodName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "decidedBy": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "decidedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "boardId", "foodName", "decidedBy", "decidedAt"]
     }
   },
   "firestore": {
@@ -306,11 +362,15 @@
     },
     "/boards/{boardId}/members/{memberId}": {
       "schema": { "$ref": "#/entities/BoardMember" },
-      "description": "Members authorized in a dining room with their food choices and mood filters."
+      "description": "Members authorized in a dining room with their cuisine and food choices."
     },
     "/boards/{boardId}/sessions/{sessionId}": {
       "schema": { "$ref": "#/entities/RoomSession" },
-      "description": "Synchronized roulette state and AI rescue result for a dining room."
+      "description": "Synchronized roulette state and AI recommendation result for a dining room."
+    },
+    "/boards/{boardId}/mealHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/MealHistory" },
+      "description": "Confirmed room meal history to avoid repeating dishes within 7 days."
     }
   }
 }
